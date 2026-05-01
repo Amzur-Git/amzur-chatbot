@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useEffect, useMemo, useState } from "react";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
 import MessageBubble from "../components/chat/MessageBubble";
@@ -27,6 +27,7 @@ export default function ChatPage() {
   const clearAuth = useAuthStore((state) => state.clearAuth);
 
   const messages = useChatStore((state) => state.messages);
+  const setMessages = useChatStore((state) => state.setMessages);
   const addMessage = useChatStore((state) => state.addMessage);
   const clearMessages = useChatStore((state) => state.clearMessages);
 
@@ -34,6 +35,40 @@ export default function ChatPage() {
     const firstName = user?.fullName?.split(" ")?.[0];
     return firstName || user?.email || "there";
   }, [user]);
+
+  const historyQuery = useQuery({
+    queryKey: ["chat-history", user?.email],
+    queryFn: chatApi.getHistory,
+    enabled: Boolean(user?.email),
+    staleTime: 30_000,
+  });
+
+  useEffect(() => {
+    if (!historyQuery.data) {
+      return;
+    }
+
+    const normalized = historyQuery.data.map((message) => ({
+      id: String(message.id),
+      role: message.role,
+      content: message.content,
+      createdAt: message.created_at,
+    }));
+    setMessages(normalized);
+  }, [historyQuery.data, setMessages]);
+
+  useEffect(() => {
+    if (!historyQuery.isError) {
+      return;
+    }
+
+    setMessages([]);
+
+    if (axios.isAxiosError(historyQuery.error) && historyQuery.error.response?.status === 401) {
+      clearAuth();
+      navigate("/auth", { replace: true });
+    }
+  }, [historyQuery.error, historyQuery.isError, clearAuth, navigate, setMessages]);
 
   const sendMutation = useMutation({
     mutationFn: chatApi.sendMessage,

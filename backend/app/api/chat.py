@@ -9,6 +9,14 @@ import uuid
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
+
+@router.get("/history", response_model=list[MessageResponse])
+async def get_history(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    return await ChatService.get_history(db, current_user.id, limit=50)
+
 @router.post("/send", response_model=MessageResponse)
 async def send_message(
     request: ChatRequest,

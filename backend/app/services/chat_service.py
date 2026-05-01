@@ -4,6 +4,7 @@ from app.models.message import Message
 from app.models.user import User
 from app.ai.llm import client
 from app.core.config import settings
+import uuid
 
 class ChatService:
     @staticmethod

@@ -61,6 +61,11 @@ export const authApi = {
 };
 
 export const chatApi = {
+  getHistory: async () => {
+    const response = await apiClient.get("/api/chat/history");
+    return response.data;
+  },
+
   sendMessage: async ({ message }) => {
     const response = await apiClient.post("/api/chat/send", { message });
     return response.data;
