@@ -126,18 +126,11 @@ export default function ChatPage() {
 
     setThreads(normalizedThreads);
 
-    if (normalizedThreads.length === 0 && !createThreadMutation.isPending) {
-      createThreadMutation.mutate({});
-      return;
-    }
-
     if (!activeThreadId || !normalizedThreads.some((thread) => thread.id === activeThreadId)) {
       setActiveThread(normalizedThreads[0]?.id ?? null);
     }
   }, [
     activeThreadId,
-    createThreadMutation.isPending,
-    createThreadMutation.mutate,
     setActiveThread,
     setThreads,
     threadsQuery.data,
