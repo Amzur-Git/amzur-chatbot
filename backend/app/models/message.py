@@ -8,6 +8,7 @@ class Message(Base):
     __tablename__ = "messages"
     
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    thread_id = Column(UUID(as_uuid=True), ForeignKey("threads.id"), nullable=True, index=True)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     role = Column(String, nullable=False)  # 'user' or 'assistant'
     content = Column(Text, nullable=False)

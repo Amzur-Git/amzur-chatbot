@@ -61,12 +61,44 @@ export const authApi = {
 };
 
 export const chatApi = {
+  getThreads: async () => {
+    const response = await apiClient.get("/api/chat/threads");
+    return response.data;
+  },
+
+  createThread: async ({ title } = {}) => {
+    const response = await apiClient.post("/api/chat/threads", {
+      title: title ?? null,
+    });
+    return response.data;
+  },
+
+  renameThread: async ({ threadId, title }) => {
+    const response = await apiClient.patch(`/api/chat/threads/${threadId}`, { title });
+    return response.data;
+  },
+
+  deleteThread: async ({ threadId }) => {
+    const response = await apiClient.delete(`/api/chat/threads/${threadId}`);
+    return response.data;
+  },
+
+  getThreadMessages: async ({ threadId }) => {
+    const response = await apiClient.get(`/api/chat/threads/${threadId}/messages`);
+    return response.data;
+  },
+
   getHistory: async () => {
     const response = await apiClient.get("/api/chat/history");
     return response.data;
   },
 
-  sendMessage: async ({ message }) => {
+  sendMessage: async ({ threadId, message }) => {
+    if (threadId) {
+      const response = await apiClient.post(`/api/chat/threads/${threadId}/send`, { message });
+      return response.data;
+    }
+
     const response = await apiClient.post("/api/chat/send", { message });
     return response.data;
   },
