@@ -1,6 +1,7 @@
-from sqlalchemy import Column, String, DateTime, Boolean
+from sqlalchemy import Column, String, DateTime, Boolean, Index, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import relationship
 from datetime import datetime
 import uuid
 
@@ -17,3 +18,10 @@ class User(Base):
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    attachments = relationship("Attachment", back_populates="user")
+
+    __table_args__ = (
+        # Enforce case-insensitive uniqueness for email addresses.
+        Index("uq_users_email_lower", func.lower(email), unique=True),
+    )

@@ -1,6 +1,6 @@
 from fastapi import Depends, HTTPException, Cookie
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func
 from app.db.session import get_db
 from app.models.user import User
 from app.core.security import decode_access_token
@@ -18,7 +18,11 @@ async def get_current_user(
         raise HTTPException(status_code=401, detail="Invalid token")
     
     email = payload.get("sub")
-    result = await db.execute(select(User).where(User.email == email))
+    normalized_email = email.strip().lower() if isinstance(email, str) else None
+    if not normalized_email:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    result = await db.execute(select(User).where(func.lower(User.email) == normalized_email))
     user = result.scalar_one_or_none()
     
     if not user:

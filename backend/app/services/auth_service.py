@@ -1,15 +1,22 @@
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func
 from app.models.user import User
 from app.schemas.user import UserCreate
 from app.core.security import get_password_hash, verify_password, create_access_token
 from typing import Optional
 
+
+def _normalize_email(email: str) -> str:
+    return email.strip().lower()
+
+
 class AuthService:
     @staticmethod
     async def create_user(db: AsyncSession, user_data: UserCreate) -> User:
+        normalized_email = _normalize_email(user_data.email)
+
         # Check if user exists
-        result = await db.execute(select(User).where(User.email == user_data.email))
+        result = await db.execute(select(User).where(func.lower(User.email) == normalized_email))
         existing_user = result.scalar_one_or_none()
         if existing_user:
             raise ValueError("Email already registered")
@@ -17,7 +24,7 @@ class AuthService:
         # Create new user
         hashed_password = get_password_hash(user_data.password)
         user = User(
-            email=user_data.email,
+            email=normalized_email,
             hashed_password=hashed_password,
             full_name=user_data.full_name
         )
@@ -28,7 +35,8 @@ class AuthService:
     
     @staticmethod
     async def authenticate_user(db: AsyncSession, email: str, password: str) -> Optional[User]:
-        result = await db.execute(select(User).where(User.email == email))
+        normalized_email = _normalize_email(email)
+        result = await db.execute(select(User).where(func.lower(User.email) == normalized_email))
         user = result.scalar_one_or_none()
         
         if not user or not user.hashed_password:
@@ -46,6 +54,8 @@ class AuthService:
         google_id: str,
         full_name: Optional[str],
     ) -> User:
+        normalized_email = _normalize_email(email)
+
         # First prefer existing google_id match.
         by_google_result = await db.execute(select(User).where(User.google_id == google_id))
         user = by_google_result.scalar_one_or_none()
@@ -57,10 +67,14 @@ class AuthService:
             return user
 
         # Account linking: if email exists, attach google_id instead of creating duplicate.
-        by_email_result = await db.execute(select(User).where(User.email == email))
+        by_email_result = await db.execute(select(User).where(func.lower(User.email) == normalized_email))
         user = by_email_result.scalar_one_or_none()
         if user:
+            if user.google_id and user.google_id != google_id:
+                raise ValueError("Email is already linked to another Google account")
+
             user.google_id = google_id
+            user.email = normalized_email
             if full_name and not user.full_name:
                 user.full_name = full_name
             await db.commit()
@@ -69,7 +83,7 @@ class AuthService:
 
         # Google-only account: hashed_password stays null.
         user = User(
-            email=email,
+            email=normalized_email,
             hashed_password=None,
             google_id=google_id,
             full_name=full_name,

@@ -1,15 +1,57 @@
 import axios from "axios";
 
-const defaultApiBaseUrl =
-  typeof window !== "undefined"
-    ? `${window.location.protocol}//${window.location.hostname}:8000`
-    : "http://127.0.0.1:8000";
+function normalizeBaseUrl(url) {
+  return String(url || "").replace(/\/+$/, "");
+}
 
-export const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL ?? defaultApiBaseUrl;
+function alignLoopbackHostname(url) {
+  if (typeof window === "undefined") {
+    return normalizeBaseUrl(url);
+  }
+
+  try {
+    const parsed = new URL(url);
+    const pageHostname = window.location.hostname;
+    const loopbackHostnames = new Set(["localhost", "127.0.0.1"]);
+
+    if (
+      loopbackHostnames.has(parsed.hostname) &&
+      loopbackHostnames.has(pageHostname) &&
+      parsed.hostname !== pageHostname
+    ) {
+      parsed.hostname = pageHostname;
+      return normalizeBaseUrl(parsed.toString());
+    }
+  } catch {
+    // If URL parsing fails, fall back to raw normalization.
+  }
+
+  return normalizeBaseUrl(url);
+}
+
+function getConfiguredApiBaseUrl() {
+  const configured = import.meta.env.VITE_API_BASE_URL;
+  if (configured) {
+    return alignLoopbackHostname(configured);
+  }
+
+  if (typeof window !== "undefined") {
+    return normalizeBaseUrl(`${window.location.protocol}//${window.location.hostname}:8000`);
+  }
+
+  return "http://127.0.0.1:8000";
+}
+
+const currentApiBaseUrl = getConfiguredApiBaseUrl();
+
+export const API_BASE_URL = currentApiBaseUrl;
+
+export function getApiBaseUrl() {
+  return currentApiBaseUrl;
+}
 
 export const apiClient = axios.create({
-  baseURL: API_BASE_URL,
+  baseURL: currentApiBaseUrl,
   withCredentials: true,
   headers: {
     "Content-Type": "application/json",
@@ -57,7 +99,13 @@ export const authApi = {
     return response.data;
   },
 
-  googleLoginUrl: () => `${API_BASE_URL}/api/auth/google/login`,
+  googleLoginUrl: () => {
+    const params = new URLSearchParams();
+    if (typeof window !== "undefined") {
+      params.set("frontend_url", window.location.origin);
+    }
+    return `${currentApiBaseUrl}/api/auth/google/login?${params.toString()}`;
+  },
 };
 
 export const chatApi = {
@@ -93,13 +141,78 @@ export const chatApi = {
     return response.data;
   },
 
-  sendMessage: async ({ threadId, message }) => {
+  sendMessage: async ({
+    threadId,
+    message,
+    attachmentIds = [],
+    formulaText = null,
+    numImages = null,
+    aspectRatio = null,
+    negativePrompt = null,
+    enhancePrompt = true,
+  }) => {
+    const payload = {
+      message,
+      attachment_ids: attachmentIds,
+      formula_text: formulaText,
+      num_images: numImages,
+      aspect_ratio: aspectRatio,
+      negative_prompt: negativePrompt,
+      enhance_prompt: enhancePrompt,
+    };
+
     if (threadId) {
-      const response = await apiClient.post(`/api/chat/threads/${threadId}/send`, { message });
+      const response = await apiClient.post(`/api/chat/threads/${threadId}/send`, payload);
       return response.data;
     }
 
-    const response = await apiClient.post("/api/chat/send", { message });
+    const response = await apiClient.post("/api/chat/send", payload);
     return response.data;
   },
+
+  generateImage: async ({
+    prompt,
+    chatThreadId,
+    numImages = 1,
+    aspectRatio = null,
+    negativePrompt = null,
+    enhancePrompt = true,
+  }) => {
+    const response = await apiClient.post("/api/generate-image", {
+      prompt,
+      chat_thread_id: chatThreadId,
+      num_images: numImages,
+      aspect_ratio: aspectRatio,
+      negative_prompt: negativePrompt,
+      enhance_prompt: enhancePrompt,
+    });
+    return response.data;
+  },
+};
+
+export const attachmentsApi = {
+  upload: async ({ threadId, file, onUploadProgress }) => {
+    const formData = new FormData();
+    formData.append("file", file);
+
+    const response = await apiClient.post(`/api/attachments/upload?thread_id=${threadId}`, formData, {
+      headers: {
+        "Content-Type": "multipart/form-data",
+      },
+      onUploadProgress,
+    });
+    return response.data;
+  },
+
+  metadata: async ({ attachmentId }) => {
+    const response = await apiClient.get(`/api/attachments/${attachmentId}`);
+    return response.data;
+  },
+
+  delete: async ({ attachmentId }) => {
+    const response = await apiClient.delete(`/api/attachments/${attachmentId}`);
+    return response.data;
+  },
+
+  downloadUrl: (attachmentId) => `${getApiBaseUrl()}/api/attachments/${attachmentId}/download`,
 };

@@ -12,11 +12,13 @@
   "dependencies": {
     "@tanstack/react-query": "^5.100.6",
     "axios": "^1.15.2",
+    "katex": "^0.16.45",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
     "react-markdown": "^10.1.0",
     "react-router-dom": "^7.14.2",
     "react-syntax-highlighter": "^16.1.1",
+    "remark-gfm": "^4.0.1",
     "typescript": "^6.0.3",
     "zustand": "^5.0.12"
   },

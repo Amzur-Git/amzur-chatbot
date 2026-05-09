@@ -1,26 +1,52 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import func, select
+from sqlalchemy.exc import ProgrammingError
+from sqlalchemy.orm import selectinload
+from fastapi import HTTPException
+from app.models.attachment import Attachment
 from app.models.message import Message
 from app.models.thread import Thread
 from app.ai.llm import client
 from app.core.config import settings
+from app.services.attachment_service import AttachmentService
 import asyncio
+import logging
 import uuid
 from typing import Optional
 
 
 DEFAULT_THREAD_TITLE = "New chat"
+logger = logging.getLogger(__name__)
 
 class ChatService:
+    MEMORY_TURNS = 5
+
+    @staticmethod
+    def _is_missing_attachments_table_error(error: Exception) -> bool:
+        return 'relation "attachments" does not exist' in str(error)
+
     @staticmethod
     async def get_history(db: AsyncSession, user_id: uuid.UUID, limit: int = 10):
-        result = await db.execute(
+        query = (
             select(Message)
             .where(Message.user_id == user_id)
             .order_by(Message.created_at.desc())
             .limit(limit)
         )
-        return list(reversed(result.scalars().all()))
+
+        try:
+            result = await db.execute(query.options(selectinload(Message.attachments)))
+            return list(reversed(result.scalars().all()))
+        except ProgrammingError as error:
+            if not ChatService._is_missing_attachments_table_error(error):
+                raise
+
+            await db.rollback()
+            result = await db.execute(query)
+            messages = list(reversed(result.scalars().all()))
+            for message in messages:
+                message.attachments = []
+            return messages
 
     @staticmethod
     async def list_threads(db: AsyncSession, user_id: uuid.UUID):
@@ -64,6 +90,17 @@ class ChatService:
 
     @staticmethod
     async def delete_thread(db: AsyncSession, thread: Thread):
+        try:
+            attachments_result = await db.execute(
+                select(Attachment).where(Attachment.thread_id == thread.id)
+            )
+            for attachment in attachments_result.scalars().all():
+                await AttachmentService.delete(db, attachment, auto_commit=False)
+        except ProgrammingError as error:
+            if not ChatService._is_missing_attachments_table_error(error):
+                raise
+            await db.rollback()
+
         thread.is_deleted = True
         await db.commit()
 
@@ -74,7 +111,7 @@ class ChatService:
         thread_id: uuid.UUID,
         limit: int = 50,
     ):
-        result = await db.execute(
+        query = (
             select(Message)
             .where(
                 Message.user_id == user_id,
@@ -83,7 +120,44 @@ class ChatService:
             .order_by(Message.created_at.desc())
             .limit(limit)
         )
-        return list(reversed(result.scalars().all()))
+
+        try:
+            result = await db.execute(query.options(selectinload(Message.attachments)))
+            return list(reversed(result.scalars().all()))
+        except ProgrammingError as error:
+            if not ChatService._is_missing_attachments_table_error(error):
+                raise
+
+            await db.rollback()
+            result = await db.execute(query)
+            messages = list(reversed(result.scalars().all()))
+            for message in messages:
+                message.attachments = []
+            return messages
+
+    @staticmethod
+    async def get_thread_memory(
+        db: AsyncSession,
+        user_id: uuid.UUID,
+        thread_id: uuid.UUID,
+        turns: int | None = None,
+    ):
+        # One conversation turn is user + assistant, so we keep 2 messages per turn.
+        # We fetch one extra record because the current user prompt is already persisted
+        # before response generation and is excluded below.
+        max_turns = turns or ChatService.MEMORY_TURNS
+        history = await ChatService.get_thread_history(
+            db,
+            user_id,
+            thread_id,
+            limit=(max_turns * 2) + 1,
+        )
+
+        # Exclude the newest user message because generate_response appends user_message.
+        if history and history[-1].role == "user":
+            return history[:-1]
+
+        return history
 
     @staticmethod
     async def _count_user_messages_in_thread(db: AsyncSession, thread_id: uuid.UUID):
@@ -124,6 +198,55 @@ class ChatService:
         return title[:255]
 
     @staticmethod
+    def _map_llm_error(error: Exception) -> HTTPException:
+        text = str(error).lower()
+
+        if (
+            "quota" in text
+            or "rate limit" in text
+            or "resource_exhausted" in text
+            or "resourceexhausted" in text
+            or "429" in text
+            or "too many requests" in text
+        ):
+            return HTTPException(
+                status_code=429,
+                detail="LLM quota or rate limit reached via LiteLLM/provider. Please try again later",
+            )
+
+        if "api key" in text or "permission" in text or "unauthorized" in text or "401" in text:
+            return HTTPException(
+                status_code=401,
+                detail="LiteLLM/provider authentication failed for chat model",
+            )
+
+        if ("not found" in text and "model" in text) or "does not exist" in text:
+            return HTTPException(
+                status_code=502,
+                detail=(
+                    "Configured chat model is unavailable on LiteLLM/provider. "
+                    "Update LLM_MODEL to a valid model"
+                ),
+            )
+
+        if "timeout" in text:
+            return HTTPException(
+                status_code=504,
+                detail="LLM request timed out",
+            )
+
+        if "safety" in text or "blocked" in text or "content policy" in text:
+            return HTTPException(
+                status_code=400,
+                detail="LLM request blocked by provider safety filters",
+            )
+
+        return HTTPException(
+            status_code=502,
+            detail="LLM request failed via LiteLLM/provider",
+        )
+
+    @staticmethod
     async def ensure_thread_title(db: AsyncSession, thread: Thread, user_message: str):
         if thread.title and thread.title != DEFAULT_THREAD_TITLE:
             return
@@ -160,14 +283,36 @@ class ChatService:
         return message
     
     @staticmethod
-    async def generate_response(user_email: str, user_message: str, history: list):
+    async def generate_response(
+        user_email: str,
+        user_message: str,
+        history: list,
+        attachments: list[Attachment] | None = None,
+    ):
         messages = [{"role": msg.role, "content": msg.content} for msg in history]
-        messages.append({"role": "user", "content": user_message})
-        
-        response = client.chat.completions.create(
-            model=settings.LLM_MODEL,
-            messages=messages,
-            user=user_email,
-            extra_body={"metadata": {"application": settings.APP_NAME}}
-        )
-        return response.choices[0].message.content
+        attachment_context = AttachmentService.build_ai_context(attachments or [])
+
+        content = user_message
+        if attachment_context:
+            max_chars = settings.MAX_ATTACHMENT_CONTEXT_CHARS
+            content = f"{user_message}\n\n{attachment_context[:max_chars]}"
+
+        messages.append({"role": "user", "content": content})
+
+        try:
+            response = client.chat.completions.create(
+                model=settings.LLM_MODEL,
+                messages=messages,
+                user=user_email,
+                extra_body={"metadata": {"application": settings.APP_NAME}},
+            )
+            return response.choices[0].message.content
+        except HTTPException:
+            raise
+        except Exception as error:
+            logger.exception(
+                "Chat completion failed: model=%s user=%s",
+                settings.LLM_MODEL,
+                user_email,
+            )
+            raise ChatService._map_llm_error(error) from error

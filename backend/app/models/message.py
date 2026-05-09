@@ -1,5 +1,6 @@
 from sqlalchemy import Column, String, DateTime, Text, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
 from app.models.user import Base
 from datetime import datetime
 import uuid
@@ -13,3 +14,10 @@ class Message(Base):
     role = Column(String, nullable=False)  # 'user' or 'assistant'
     content = Column(Text, nullable=False)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+    attachments = relationship(
+        "Attachment",
+        back_populates="message",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )

@@ -4,8 +4,7 @@ import { useNavigate } from "react-router-dom";
 import axios from "axios";
 import MessageBubble from "../components/chat/MessageBubble";
 import ChatComposer from "../components/chat/ChatComposer";
-import AttachmentDropzone from "../components/attachments/AttachmentDropzone";
-import { authApi, chatApi, extractApiError } from "../lib/api";
+import { attachmentsApi, authApi, chatApi, extractApiError } from "../lib/api";
 import { useAuthStore } from "../hooks/useAuthStore";
 import { useChatStore } from "../hooks/useChatStore";
 
@@ -15,6 +14,21 @@ function buildLocalMessage({ role, content }) {
     role,
     content,
     createdAt: new Date().toISOString(),
+    attachments: [],
+  };
+}
+
+function buildLocalAttachment(file) {
+  return {
+    client_id: crypto.randomUUID(),
+    id: null,
+    file_name: file.name,
+    file_type: "pending",
+    file_size: file.size,
+    created_at: new Date().toISOString(),
+    metadata: {},
+    uploading: true,
+    progress: 0,
   };
 }
 
@@ -22,7 +36,20 @@ export default function ChatPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [input, setInput] = useState("");
+  const [formulaText, setFormulaText] = useState("");
+  const [pendingAttachments, setPendingAttachments] = useState([]);
+  const [imageOptions, setImageOptions] = useState({
+    enabled: false,
+    numImages: 1,
+    aspectRatio: "1:1",
+    negativePrompt: "",
+    enhancePrompt: true,
+  });
+  const [imageStatus, setImageStatus] = useState("idle");
+  const [imageStatusMessage, setImageStatusMessage] = useState("");
   const [error, setError] = useState("");
+  const [lastSendAttempt, setLastSendAttempt] = useState(null);
+  const [failedSend, setFailedSend] = useState(null);
 
   const user = useAuthStore((state) => state.user);
   const clearAuth = useAuthStore((state) => state.clearAuth);
@@ -37,6 +64,8 @@ export default function ChatPage() {
   const setMessages = useChatStore((state) => state.setMessages);
   const addMessage = useChatStore((state) => state.addMessage);
   const clearChatState = useChatStore((state) => state.clearChatState);
+
+  const uploading = pendingAttachments.some((item) => item.uploading);
 
   const greeting = useMemo(() => {
     const firstName = user?.fullName?.split(" ")?.[0];
@@ -106,10 +135,20 @@ export default function ChatPage() {
     staleTime: 15_000,
   });
 
+  const uploadAttachmentMutation = useMutation({
+    mutationFn: attachmentsApi.upload,
+    onError: (mutationError) => {
+      setError(extractApiError(mutationError, "Unable to upload attachment"));
+    },
+  });
+
+  const deleteAttachmentMutation = useMutation({
+    mutationFn: attachmentsApi.delete,
+  });
+
   useEffect(() => {
-    if (!activeThreadId) {
-      setMessages([]);
-    }
+    // Reset message pane immediately on thread switch to avoid showing stale content.
+    setMessages([]);
   }, [activeThreadId, setMessages]);
 
   useEffect(() => {
@@ -147,6 +186,14 @@ export default function ChatPage() {
       role: message.role,
       content: message.content,
       createdAt: message.created_at,
+      attachments: (message.attachments || []).map((attachment) => ({
+        id: String(attachment.id),
+        file_type: attachment.file_type,
+        file_name: attachment.file_name,
+        file_size: attachment.file_size,
+        created_at: attachment.created_at,
+        metadata: attachment.metadata || {},
+      })),
     }));
     setMessages(normalizedMessages);
   }, [messagesQuery.data, setMessages]);
@@ -157,39 +204,81 @@ export default function ChatPage() {
     }
 
     setMessages([]);
+    setError(extractApiError(threadsQuery.error, "Unable to load chat threads"));
 
     if (axios.isAxiosError(threadsQuery.error) && threadsQuery.error.response?.status === 401) {
       clearAuth();
       navigate("/auth", { replace: true });
     }
-  }, [threadsQuery.error, threadsQuery.isError, clearAuth, navigate, setMessages]);
+  }, [threadsQuery.error, threadsQuery.isError, clearAuth, navigate, setMessages, setError]);
 
   useEffect(() => {
     if (!messagesQuery.isError) {
       return;
     }
 
+    setMessages([]);
+    setError(extractApiError(messagesQuery.error, "Unable to load this conversation"));
+
     if (axios.isAxiosError(messagesQuery.error) && messagesQuery.error.response?.status === 401) {
       clearAuth();
       navigate("/auth", { replace: true });
     }
-  }, [messagesQuery.error, messagesQuery.isError, clearAuth, navigate]);
+  }, [messagesQuery.error, messagesQuery.isError, clearAuth, navigate, setMessages, setError]);
 
   const sendMutation = useMutation({
     mutationFn: chatApi.sendMessage,
     onSuccess: (assistantMessage) => {
+      const assistantAttachments = (assistantMessage.attachments || []).map((attachment) => ({
+        id: String(attachment.id),
+        file_type: attachment.file_type,
+        file_name: attachment.file_name,
+        file_size: attachment.file_size,
+        created_at: attachment.created_at,
+        metadata: attachment.metadata || {},
+      }));
+
       addMessage(
-        buildLocalMessage({
+        {
+          ...buildLocalMessage({
           role: "assistant",
           content: assistantMessage.content,
-        })
+          }),
+          attachments: assistantAttachments,
+        }
       );
+
+      const generatedImageCount = assistantAttachments.filter(
+        (attachment) => attachment.file_type === "image" && attachment.metadata?.generated
+      ).length;
+      if (generatedImageCount > 0) {
+        setImageStatus("success");
+        setImageStatusMessage(`Generated ${generatedImageCount} image(s)`);
+      } else {
+        setImageStatus("idle");
+        setImageStatusMessage("");
+      }
+
       queryClient.invalidateQueries({ queryKey: ["chat-threads", user?.email] });
+      queryClient.invalidateQueries({ queryKey: ["thread-messages", activeThreadId] });
+      setPendingAttachments([]);
+      setFormulaText("");
+      setLastSendAttempt(null);
+      setFailedSend(null);
       setError("");
     },
     onError: (mutationError) => {
       const message = extractApiError(mutationError, "Unable to send message");
       setError(message);
+      setImageStatus("error");
+      setImageStatusMessage(message);
+
+      if (lastSendAttempt) {
+        setFailedSend({
+          messageId: lastSendAttempt.localMessageId,
+          payload: lastSendAttempt.payload,
+        });
+      }
 
       if (axios.isAxiosError(mutationError) && mutationError.response?.status === 401) {
         clearAuth();
@@ -215,6 +304,90 @@ export default function ChatPage() {
     }
   };
 
+  const uploadFilesToThread = async (threadId, files) => {
+    const localItems = files.map((file) => buildLocalAttachment(file));
+    setPendingAttachments((current) => [...current, ...localItems]);
+
+    await Promise.all(
+      files.map(async (file, index) => {
+        const local = localItems[index];
+
+        try {
+          const uploaded = await uploadAttachmentMutation.mutateAsync({
+            threadId,
+            file,
+            onUploadProgress: (event) => {
+              const nextProgress = event.total
+                ? Math.round((event.loaded / event.total) * 100)
+                : 0;
+              setPendingAttachments((current) =>
+                current.map((item) =>
+                  item.client_id === local.client_id
+                    ? { ...item, progress: nextProgress }
+                    : item
+                )
+              );
+            },
+          });
+
+          setPendingAttachments((current) =>
+            current.map((item) =>
+              item.client_id === local.client_id
+                ? {
+                    ...item,
+                    id: String(uploaded.id),
+                    file_type: uploaded.file_type,
+                    file_name: uploaded.file_name,
+                    file_size: uploaded.file_size,
+                    created_at: uploaded.created_at,
+                    metadata: uploaded.metadata || {},
+                    uploading: false,
+                    progress: 100,
+                  }
+                : item
+            )
+          );
+        } catch {
+          setPendingAttachments((current) =>
+            current.filter((item) => item.client_id !== local.client_id)
+          );
+        }
+      })
+    );
+  };
+
+  const handlePickFiles = async (files) => {
+    try {
+      let destinationThreadId = activeThreadId;
+      if (!destinationThreadId) {
+        const createdThread = await createThreadMutation.mutateAsync({});
+        destinationThreadId = String(createdThread.id);
+      }
+
+      await uploadFilesToThread(destinationThreadId, files);
+    } catch {
+      // handled by mutation onError
+    }
+  };
+
+  const handleRemoveAttachment = async (attachment) => {
+    if (!attachment.id) {
+      setPendingAttachments((current) =>
+        current.filter((item) => item.client_id !== attachment.client_id)
+      );
+      return;
+    }
+
+    try {
+      await deleteAttachmentMutation.mutateAsync({ attachmentId: attachment.id });
+      setPendingAttachments((current) =>
+        current.filter((item) => item.client_id !== attachment.client_id)
+      );
+    } catch (mutationError) {
+      setError(extractApiError(mutationError, "Unable to remove attachment"));
+    }
+  };
+
   const handleRenameThread = (thread) => {
     const nextTitle = window.prompt("Rename thread", thread.title);
     if (!nextTitle || !nextTitle.trim()) {
@@ -228,7 +401,7 @@ export default function ChatPage() {
   };
 
   const handleDeleteThread = (thread) => {
-    const confirmed = window.confirm(`Delete thread \"${thread.title}\"?`);
+    const confirmed = window.confirm(`Delete thread "${thread.title}"?`);
     if (!confirmed) {
       return;
     }
@@ -238,7 +411,8 @@ export default function ChatPage() {
 
   const handleSend = async () => {
     const content = input.trim();
-    if (!content || sendMutation.isPending || createThreadMutation.isPending) {
+    const canSend = content || formulaText.trim() || pendingAttachments.length > 0;
+    if (!canSend || sendMutation.isPending || createThreadMutation.isPending || uploading) {
       return;
     }
 
@@ -249,13 +423,73 @@ export default function ChatPage() {
         destinationThreadId = String(createdThread.id);
       }
 
-      addMessage(buildLocalMessage({ role: "user", content }));
+      const readyAttachments = pendingAttachments.filter((item) => item.id && !item.uploading);
+      const messageAttachments = readyAttachments.map((attachment) => ({
+        id: String(attachment.id),
+        file_type: attachment.file_type,
+        file_name: attachment.file_name,
+        file_size: attachment.file_size,
+        created_at: attachment.created_at,
+        metadata: attachment.metadata || {},
+      }));
+
+      const localUserMessage = {
+        ...buildLocalMessage({ role: "user", content: content || "[attachment/formula message]" }),
+        attachments: messageAttachments,
+      };
+      addMessage(localUserMessage);
+
+      const payload = {
+        threadId: destinationThreadId,
+        message: content || "Please process the attached content.",
+        attachmentIds: readyAttachments.map((item) => item.id),
+        formulaText: formulaText.trim() || null,
+        numImages: imageOptions.enabled ? imageOptions.numImages : null,
+        aspectRatio: imageOptions.enabled ? imageOptions.aspectRatio : null,
+        negativePrompt: imageOptions.enabled ? imageOptions.negativePrompt.trim() || null : null,
+        enhancePrompt: imageOptions.enabled ? imageOptions.enhancePrompt : true,
+      };
+
+      if (imageOptions.enabled) {
+        setImageStatus("generating");
+        setImageStatusMessage("Generating image(s)...");
+      } else {
+        setImageStatus("idle");
+        setImageStatusMessage("");
+      }
+
       setInput("");
       setError("");
-      sendMutation.mutate({ threadId: destinationThreadId, message: content });
+      setLastSendAttempt({
+        localMessageId: localUserMessage.id,
+        payload,
+      });
+      setFailedSend(null);
+      sendMutation.mutate(payload);
     } catch {
       // Error state is already handled in mutation onError.
     }
+  };
+
+  const handleRetryFailedPrompt = () => {
+    if (!failedSend || sendMutation.isPending || createThreadMutation.isPending || uploading) {
+      return;
+    }
+
+    if (failedSend.payload?.numImages) {
+      setImageStatus("generating");
+      setImageStatusMessage("Generating image(s)...");
+    } else {
+      setImageStatus("idle");
+      setImageStatusMessage("");
+    }
+
+    setError("");
+    setLastSendAttempt({
+      localMessageId: failedSend.messageId,
+      payload: failedSend.payload,
+    });
+    sendMutation.mutate(failedSend.payload);
   };
 
   return (
@@ -266,8 +500,6 @@ export default function ChatPage() {
           <h2>Conversation Studio</h2>
           <p className="muted">A focused workspace for secure enterprise chat.</p>
         </div>
-
-        <AttachmentDropzone />
 
         <section className="threads-panel">
           <div className="threads-panel__header">
@@ -291,7 +523,13 @@ export default function ChatPage() {
                 <button
                   className="thread-item__title"
                   type="button"
-                  onClick={() => setActiveThread(thread.id)}
+                  onClick={() => {
+                    setActiveThread(thread.id);
+                    setMessages([]);
+                    setPendingAttachments([]);
+                    setFormulaText("");
+                    setError("");
+                  }}
                 >
                   {thread.title}
                 </button>
@@ -325,15 +563,31 @@ export default function ChatPage() {
         </header>
 
         <div className="chat-stream">
-          {messages.length === 0 ? (
+          {activeThreadId && messagesQuery.isFetching ? (
+            <div className="empty-state">
+              <p>Loading conversation...</p>
+            </div>
+          ) : messages.length === 0 ? (
             <div className="empty-state">
               <p>Start with something simple.</p>
               <p className="muted">Example: Summarize today's priorities in 5 bullet points.</p>
             </div>
           ) : (
-            messages.map((message) => <MessageBubble key={message.id} message={message} />)
+            messages.map((message) => (
+              <MessageBubble
+                key={message.id}
+                message={message}
+                showRetry={failedSend?.messageId === message.id}
+                onRetry={handleRetryFailedPrompt}
+                retrying={sendMutation.isPending}
+              />
+            ))
           )}
         </div>
+
+        {imageStatus !== "idle" ? (
+          <p className={`chat-image-status chat-image-status--${imageStatus}`}>{imageStatusMessage}</p>
+        ) : null}
 
         {error ? <p className="error-text chat-error">{error}</p> : null}
 
@@ -342,6 +596,14 @@ export default function ChatPage() {
           onChange={setInput}
           onSend={handleSend}
           sending={sendMutation.isPending}
+          attachments={pendingAttachments}
+          onPickFiles={handlePickFiles}
+          onRemoveAttachment={handleRemoveAttachment}
+          uploading={uploading}
+          formulaText={formulaText}
+          onFormulaTextChange={setFormulaText}
+          imageOptions={imageOptions}
+          onImageOptionsChange={setImageOptions}
         />
       </section>
     </main>

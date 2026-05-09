@@ -1,8 +1,15 @@
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
+import AttachmentRenderer from "../attachments/AttachmentRenderer";
 
-export default function MessageBubble({ message }) {
+export default function MessageBubble({
+  message,
+  showRetry = false,
+  onRetry,
+  retrying = false,
+}) {
   const isUser = message.role === "user";
 
   return (
@@ -16,6 +23,7 @@ export default function MessageBubble({ message }) {
           <p>{message.content}</p>
         ) : (
           <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
             components={{
               code(props) {
                 const { children, className, ...rest } = props;
@@ -42,6 +50,16 @@ export default function MessageBubble({ message }) {
           </ReactMarkdown>
         )}
       </div>
+
+      <AttachmentRenderer attachments={message.attachments || []} />
+
+      {isUser && showRetry ? (
+        <div className="bubble__retry">
+          <button type="button" onClick={onRetry} disabled={retrying}>
+            {retrying ? "Retrying..." : "Retry"}
+          </button>
+        </div>
+      ) : null}
     </article>
   );
 }
