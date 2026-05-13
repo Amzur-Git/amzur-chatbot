@@ -1,12 +1,48 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
+import { ChevronDown } from "lucide-react";
 import MessageBubble from "../components/chat/MessageBubble";
 import ChatComposer from "../components/chat/ChatComposer";
 import { attachmentsApi, authApi, chatApi, extractApiError } from "../lib/api";
 import { useAuthStore } from "../hooks/useAuthStore";
 import { useChatStore } from "../hooks/useChatStore";
+
+function hasLikelyImageIntent(text) {
+  const value = String(text || "").trim();
+  if (!value) {
+    return false;
+  }
+
+  if (/^\s*\/imagine\b/i.test(value)) {
+    return true;
+  }
+
+  return /(generate|create|make|draw|design|render)\b.{0,24}\b(image|picture|photo|art|illustration)|\b(image|picture|photo|illustration)\b.{0,18}\b(of|for|showing|with)/i.test(
+    value
+  );
+}
+
+function inferFormulaText(text) {
+  const value = String(text || "").trim();
+  if (!value) {
+    return null;
+  }
+
+  const hasLatexMarker =
+    /\$[^$]+\$/.test(value) ||
+    /\\(frac|sqrt|sum|int|alpha|beta|gamma|theta|pi|sin|cos|tan|log|ln)\b/i.test(value) ||
+    /[\^_{}]/.test(value);
+
+  const hasPlainEquation =
+    /(?:\b[\w\)\]]+\s*(?:=|≈|≃|<=|>=|<|>)\s*[\w\(\[]+\b)/i.test(value) ||
+    /(?:\b(?:\d+(?:\.\d+)?|[a-z])\s*[+\-*/^×÷]\s*(?:\d+(?:\.\d+)?|[a-z])(?:\s*[+\-*/^×÷]\s*(?:\d+(?:\.\d+)?|[a-z]))*\b)/i.test(
+      value
+    );
+
+  return hasLatexMarker || hasPlainEquation ? value : null;
+}
 
 function buildLocalMessage({ role, content }) {
   return {
@@ -32,24 +68,95 @@ function buildLocalAttachment(file) {
   };
 }
 
+const IMAGE_OPTIONS_STORAGE_KEY = "amzur-chatbot:image-options";
+const DEFAULT_IMAGE_OPTIONS = {
+  numImages: 1,
+  aspectRatio: "1:1",
+  negativePrompt: "",
+  enhancePrompt: true,
+};
+const ALLOWED_ASPECT_RATIOS = new Set(["1:1", "3:4", "4:3", "16:9", "9:16"]);
+
+function normalizeImageOptions(value) {
+  const candidate = value && typeof value === "object" ? value : {};
+  const numImages = Number(candidate.numImages);
+  const normalizedNumImages = Number.isFinite(numImages)
+    ? Math.min(4, Math.max(1, Math.round(numImages)))
+    : DEFAULT_IMAGE_OPTIONS.numImages;
+
+  const aspectRatio = ALLOWED_ASPECT_RATIOS.has(candidate.aspectRatio)
+    ? candidate.aspectRatio
+    : DEFAULT_IMAGE_OPTIONS.aspectRatio;
+
+  return {
+    numImages: normalizedNumImages,
+    aspectRatio,
+    negativePrompt:
+      typeof candidate.negativePrompt === "string"
+        ? candidate.negativePrompt
+        : DEFAULT_IMAGE_OPTIONS.negativePrompt,
+    enhancePrompt:
+      typeof candidate.enhancePrompt === "boolean"
+        ? candidate.enhancePrompt
+        : DEFAULT_IMAGE_OPTIONS.enhancePrompt,
+  };
+}
+
 export default function ChatPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [input, setInput] = useState("");
-  const [formulaText, setFormulaText] = useState("");
   const [pendingAttachments, setPendingAttachments] = useState([]);
-  const [imageOptions, setImageOptions] = useState({
-    enabled: false,
-    numImages: 1,
-    aspectRatio: "1:1",
-    negativePrompt: "",
-    enhancePrompt: true,
+  const [imageOptions, setImageOptions] = useState(() => {
+    if (typeof window === "undefined") {
+      return DEFAULT_IMAGE_OPTIONS;
+    }
+
+    try {
+      const raw = window.localStorage.getItem(IMAGE_OPTIONS_STORAGE_KEY);
+      if (!raw) {
+        return DEFAULT_IMAGE_OPTIONS;
+      }
+
+      return normalizeImageOptions(JSON.parse(raw));
+    } catch {
+      return DEFAULT_IMAGE_OPTIONS;
+    }
   });
   const [imageStatus, setImageStatus] = useState("idle");
   const [imageStatusMessage, setImageStatusMessage] = useState("");
+  const [dbQueryMode, setDbQueryMode] = useState(false);
   const [error, setError] = useState("");
   const [lastSendAttempt, setLastSendAttempt] = useState(null);
   const [failedSend, setFailedSend] = useState(null);
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
+  const chatStreamRef = useRef(null);
+  const chatBottomRef = useRef(null);
+  const shouldAutoScrollRef = useRef(true);
+  const previousThreadRef = useRef(null);
+  const previousMessageCountRef = useRef(0);
+  const previousLastMessageIdRef = useRef(null);
+  const previousLastMessageContentRef = useRef("");
+  const pendingInstantScrollRef = useRef(true);
+  const createThreadGuardRef = useRef(false);
+  const optimisticNewThreadIdRef = useRef(null);
+  const optimisticPreviousThreadIdRef = useRef(null);
+  const pendingCreatedThreadIdRef = useRef(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    try {
+      window.localStorage.setItem(
+        IMAGE_OPTIONS_STORAGE_KEY,
+        JSON.stringify(normalizeImageOptions(imageOptions))
+      );
+    } catch {
+      // Ignore storage failures (private mode, quota, disabled storage).
+    }
+  }, [imageOptions]);
 
   const user = useAuthStore((state) => state.user);
   const clearAuth = useAuthStore((state) => state.clearAuth);
@@ -66,6 +173,65 @@ export default function ChatPage() {
   const clearChatState = useChatStore((state) => state.clearChatState);
 
   const uploading = pendingAttachments.some((item) => item.uploading);
+
+  const BOTTOM_THRESHOLD_PX = 100;
+
+  const getDistanceFromBottom = useCallback(() => {
+    const stream = chatStreamRef.current;
+    if (!stream) {
+      return 0;
+    }
+
+    return stream.scrollHeight - stream.scrollTop - stream.clientHeight;
+  }, []);
+
+  const isNearBottom = useCallback(() => {
+    const stream = chatStreamRef.current;
+    if (!stream) {
+      return true;
+    }
+
+    const distanceFromBottom = getDistanceFromBottom();
+    return distanceFromBottom <= BOTTOM_THRESHOLD_PX;
+  }, [getDistanceFromBottom]);
+
+  const scrollToBottom = useCallback((behavior = "auto") => {
+    if (!chatBottomRef.current) {
+      return;
+    }
+
+    chatBottomRef.current.scrollIntoView({
+      behavior,
+      block: "end",
+    });
+  }, []);
+
+  const evaluateScrollState = useCallback(() => {
+    const stream = chatStreamRef.current;
+    if (!stream) {
+      shouldAutoScrollRef.current = true;
+      setShowJumpToLatest(false);
+      return;
+    }
+
+    const nearBottom = isNearBottom();
+    const distanceFromBottom = getDistanceFromBottom();
+    const hasOverflow = Boolean(stream && stream.scrollHeight > stream.clientHeight + 8);
+
+    shouldAutoScrollRef.current = nearBottom;
+    setShowJumpToLatest(hasOverflow && distanceFromBottom > BOTTOM_THRESHOLD_PX);
+  }, [getDistanceFromBottom, isNearBottom]);
+
+  const handleChatScroll = useCallback(() => {
+    evaluateScrollState();
+  }, [evaluateScrollState]);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => evaluateScrollState());
+    return () => {
+      window.cancelAnimationFrame(frame);
+    };
+  }, [evaluateScrollState, activeThreadId]);
 
   const greeting = useMemo(() => {
     const firstName = user?.fullName?.split(" ")?.[0];
@@ -88,13 +254,49 @@ export default function ChatPage() {
         createdAt: thread.created_at,
         updatedAt: thread.updated_at,
       };
-      upsertThread(normalized);
-      setActiveThread(normalized.id);
+
+      const optimisticThreadId = optimisticNewThreadIdRef.current;
+      if (optimisticThreadId) {
+        const currentState = useChatStore.getState();
+        const hasOptimistic = currentState.threads.some((candidate) => candidate.id === optimisticThreadId);
+
+        if (hasOptimistic) {
+          const reconciledThreads = currentState.threads.map((candidate) =>
+            candidate.id === optimisticThreadId ? normalized : candidate
+          );
+          setThreads(reconciledThreads);
+        } else {
+          upsertThread(normalized);
+        }
+
+        // Always switch to the real thread id created by the server.
+        // Relying on the temp id still being active can race with list sync updates.
+        setActiveThread(normalized.id);
+        pendingCreatedThreadIdRef.current = normalized.id;
+
+        optimisticNewThreadIdRef.current = null;
+        optimisticPreviousThreadIdRef.current = null;
+      } else {
+        upsertThread(normalized);
+        setActiveThread(normalized.id);
+        pendingCreatedThreadIdRef.current = normalized.id;
+      }
+
       setMessages([]);
       setError("");
       queryClient.invalidateQueries({ queryKey: ["chat-threads", user?.email] });
     },
     onError: (mutationError) => {
+      const optimisticThreadId = optimisticNewThreadIdRef.current;
+      if (optimisticThreadId) {
+        const previousThreadId = optimisticPreviousThreadIdRef.current;
+        removeThread(optimisticThreadId);
+        setActiveThread(previousThreadId || null);
+        optimisticNewThreadIdRef.current = null;
+        optimisticPreviousThreadIdRef.current = null;
+      }
+      pendingCreatedThreadIdRef.current = null;
+
       setError(extractApiError(mutationError, "Unable to create thread"));
     },
   });
@@ -131,7 +333,7 @@ export default function ChatPage() {
   const messagesQuery = useQuery({
     queryKey: ["thread-messages", activeThreadId],
     queryFn: () => chatApi.getThreadMessages({ threadId: activeThreadId }),
-    enabled: Boolean(user?.email && activeThreadId),
+    enabled: Boolean(user?.email && activeThreadId && !String(activeThreadId).startsWith("temp-")),
     staleTime: 15_000,
   });
 
@@ -163,10 +365,40 @@ export default function ChatPage() {
       updatedAt: thread.updated_at,
     }));
 
-    setThreads(normalizedThreads);
+    const currentState = useChatStore.getState();
+    let mergedThreads = normalizedThreads;
 
-    if (!activeThreadId || !normalizedThreads.some((thread) => thread.id === activeThreadId)) {
-      setActiveThread(normalizedThreads[0]?.id ?? null);
+    // Preserve the currently active thread if the latest list payload has not caught up yet.
+    if (activeThreadId && !normalizedThreads.some((thread) => thread.id === activeThreadId)) {
+      const localActiveThread = currentState.threads.find((thread) => thread.id === activeThreadId);
+      if (localActiveThread) {
+        mergedThreads = [
+          localActiveThread,
+          ...normalizedThreads.filter((thread) => thread.id !== localActiveThread.id),
+        ];
+      }
+    }
+
+    setThreads(mergedThreads);
+
+    const pendingCreatedThreadId = pendingCreatedThreadIdRef.current;
+    if (pendingCreatedThreadId && mergedThreads.some((thread) => thread.id === pendingCreatedThreadId)) {
+      pendingCreatedThreadIdRef.current = null;
+    }
+
+    const hasOptimisticActiveThread = Boolean(
+      activeThreadId && String(activeThreadId).startsWith("temp-")
+    );
+    const hasPendingCreatedActiveThread = Boolean(
+      pendingCreatedThreadId && activeThreadId === pendingCreatedThreadId
+    );
+
+    if (
+      !hasOptimisticActiveThread &&
+      !hasPendingCreatedActiveThread &&
+      (!activeThreadId || !mergedThreads.some((thread) => thread.id === activeThreadId))
+    ) {
+      setActiveThread(mergedThreads[0]?.id ?? null);
     }
   }, [
     activeThreadId,
@@ -197,6 +429,48 @@ export default function ChatPage() {
     }));
     setMessages(normalizedMessages);
   }, [messagesQuery.data, setMessages]);
+
+  useEffect(() => {
+    const threadChanged = previousThreadRef.current !== activeThreadId;
+    const previousCount = previousMessageCountRef.current;
+    const previousLastMessageId = previousLastMessageIdRef.current;
+    const previousLastMessageContent = previousLastMessageContentRef.current;
+    const lastMessage = messages[messages.length - 1] ?? null;
+
+    previousThreadRef.current = activeThreadId;
+
+    if (threadChanged) {
+      shouldAutoScrollRef.current = true;
+      setShowJumpToLatest(false);
+      pendingInstantScrollRef.current = true;
+    }
+
+    const shouldForceInstant = pendingInstantScrollRef.current;
+
+    if (shouldForceInstant) {
+      requestAnimationFrame(() => {
+        scrollToBottom("auto");
+        evaluateScrollState();
+      });
+      pendingInstantScrollRef.current = false;
+    } else if (shouldAutoScrollRef.current) {
+      const assistantAppended =
+        Boolean(lastMessage) &&
+        lastMessage.role === "assistant" &&
+        (messages.length > previousCount ||
+          (lastMessage.id === previousLastMessageId &&
+            lastMessage.content !== previousLastMessageContent));
+
+      requestAnimationFrame(() => {
+        scrollToBottom(assistantAppended ? "smooth" : "auto");
+        evaluateScrollState();
+      });
+    }
+
+    previousMessageCountRef.current = messages.length;
+    previousLastMessageIdRef.current = lastMessage?.id ?? null;
+    previousLastMessageContentRef.current = lastMessage?.content ?? "";
+  }, [activeThreadId, evaluateScrollState, messages, scrollToBottom]);
 
   useEffect(() => {
     if (!threadsQuery.isError) {
@@ -262,7 +536,6 @@ export default function ChatPage() {
       queryClient.invalidateQueries({ queryKey: ["chat-threads", user?.email] });
       queryClient.invalidateQueries({ queryKey: ["thread-messages", activeThreadId] });
       setPendingAttachments([]);
-      setFormulaText("");
       setLastSendAttempt(null);
       setFailedSend(null);
       setError("");
@@ -297,10 +570,43 @@ export default function ChatPage() {
   });
 
   const handleCreateThread = async () => {
+    if (createThreadGuardRef.current || createThreadMutation.isPending) {
+      return;
+    }
+
+    createThreadGuardRef.current = true;
+
+    const optimisticThreadId = `temp-${crypto.randomUUID()}`;
+    const now = new Date().toISOString();
+    optimisticNewThreadIdRef.current = optimisticThreadId;
+    optimisticPreviousThreadIdRef.current = activeThreadId;
+
+    upsertThread({
+      id: optimisticThreadId,
+      title: "New chat",
+      createdAt: now,
+      updatedAt: now,
+    });
+    setActiveThread(optimisticThreadId);
+    setMessages([]);
+    setInput("");
+    setPendingAttachments([]);
+    setImageStatus("idle");
+    setImageStatusMessage("");
+    setLastSendAttempt(null);
+    setFailedSend(null);
+    setError("");
+    shouldAutoScrollRef.current = true;
+    setShowJumpToLatest(false);
+    pendingInstantScrollRef.current = true;
+    requestAnimationFrame(() => scrollToBottom("auto"));
+
     try {
       await createThreadMutation.mutateAsync({});
     } catch {
       // Error state is already handled in mutation onError.
+    } finally {
+      createThreadGuardRef.current = false;
     }
   };
 
@@ -411,7 +717,8 @@ export default function ChatPage() {
 
   const handleSend = async () => {
     const content = input.trim();
-    const canSend = content || formulaText.trim() || pendingAttachments.length > 0;
+    const inferredFormulaText = inferFormulaText(content);
+    const canSend = content || pendingAttachments.length > 0;
     if (!canSend || sendMutation.isPending || createThreadMutation.isPending || uploading) {
       return;
     }
@@ -443,14 +750,15 @@ export default function ChatPage() {
         threadId: destinationThreadId,
         message: content || "Please process the attached content.",
         attachmentIds: readyAttachments.map((item) => item.id),
-        formulaText: formulaText.trim() || null,
-        numImages: imageOptions.enabled ? imageOptions.numImages : null,
-        aspectRatio: imageOptions.enabled ? imageOptions.aspectRatio : null,
-        negativePrompt: imageOptions.enabled ? imageOptions.negativePrompt.trim() || null : null,
-        enhancePrompt: imageOptions.enabled ? imageOptions.enhancePrompt : true,
+        formulaText: inferredFormulaText,
+        dbQueryMode,
+        numImages: imageOptions.numImages,
+        aspectRatio: imageOptions.aspectRatio,
+        negativePrompt: imageOptions.negativePrompt.trim() || null,
+        enhancePrompt: imageOptions.enhancePrompt,
       };
 
-      if (imageOptions.enabled) {
+      if (!dbQueryMode && hasLikelyImageIntent(payload.message)) {
         setImageStatus("generating");
         setImageStatusMessage("Generating image(s)...");
       } else {
@@ -465,10 +773,21 @@ export default function ChatPage() {
         payload,
       });
       setFailedSend(null);
+      shouldAutoScrollRef.current = true;
+      setShowJumpToLatest(false);
+      pendingInstantScrollRef.current = true;
+      requestAnimationFrame(() => scrollToBottom("auto"));
       sendMutation.mutate(payload);
     } catch {
       // Error state is already handled in mutation onError.
     }
+  };
+
+  const handleJumpToLatest = () => {
+    shouldAutoScrollRef.current = true;
+    setShowJumpToLatest(false);
+    pendingInstantScrollRef.current = true;
+    scrollToBottom("auto");
   };
 
   const handleRetryFailedPrompt = () => {
@@ -476,7 +795,7 @@ export default function ChatPage() {
       return;
     }
 
-    if (failedSend.payload?.numImages) {
+    if (!failedSend.payload?.dbQueryMode && hasLikelyImageIntent(failedSend.payload?.message || "")) {
       setImageStatus("generating");
       setImageStatusMessage("Generating image(s)...");
     } else {
@@ -504,15 +823,16 @@ export default function ChatPage() {
         <section className="threads-panel">
           <div className="threads-panel__header">
             <p className="eyebrow">threads</p>
-            <button
-              className="secondary-btn"
-              type="button"
-              onClick={handleCreateThread}
-              disabled={createThreadMutation.isPending}
-            >
-              {createThreadMutation.isPending ? "Creating..." : "New chat"}
-            </button>
           </div>
+
+          <button
+            className="primary-btn threads-panel__new-btn"
+            type="button"
+            onClick={handleCreateThread}
+            disabled={createThreadMutation.isPending}
+          >
+            {createThreadMutation.isPending ? "Creating..." : "New chat"}
+          </button>
 
           <div className="threads-list">
             {threads.map((thread) => (
@@ -524,20 +844,20 @@ export default function ChatPage() {
                   className="thread-item__title"
                   type="button"
                   onClick={() => {
+                    shouldAutoScrollRef.current = true;
                     setActiveThread(thread.id);
                     setMessages([]);
                     setPendingAttachments([]);
-                    setFormulaText("");
                     setError("");
                   }}
                 >
                   {thread.title}
                 </button>
                 <div className="thread-item__actions">
-                  <button type="button" onClick={() => handleRenameThread(thread)}>
+                  <button className="thread-action" type="button" onClick={() => handleRenameThread(thread)}>
                     Rename
                   </button>
-                  <button type="button" onClick={() => handleDeleteThread(thread)}>
+                  <button className="thread-action thread-action--danger" type="button" onClick={() => handleDeleteThread(thread)}>
                     Delete
                   </button>
                 </div>
@@ -562,7 +882,7 @@ export default function ChatPage() {
           <p>Ask a question and your assistant will respond with context-aware guidance.</p>
         </header>
 
-        <div className="chat-stream">
+        <div className="chat-stream" ref={chatStreamRef} onScroll={handleChatScroll}>
           {activeThreadId && messagesQuery.isFetching ? (
             <div className="empty-state">
               <p>Loading conversation...</p>
@@ -583,7 +903,20 @@ export default function ChatPage() {
               />
             ))
           )}
+          <div ref={chatBottomRef} aria-hidden="true" />
         </div>
+
+        {showJumpToLatest ? (
+          <button
+            type="button"
+            className="chat-jump-latest"
+            onClick={handleJumpToLatest}
+            aria-label="Jump to latest message"
+            title="Jump to latest message"
+          >
+            <ChevronDown className="chat-jump-latest__icon" aria-hidden="true" />
+          </button>
+        ) : null}
 
         {imageStatus !== "idle" ? (
           <p className={`chat-image-status chat-image-status--${imageStatus}`}>{imageStatusMessage}</p>
@@ -592,6 +925,7 @@ export default function ChatPage() {
         {error ? <p className="error-text chat-error">{error}</p> : null}
 
         <ChatComposer
+          focusKey={activeThreadId || "new-chat"}
           value={input}
           onChange={setInput}
           onSend={handleSend}
@@ -600,10 +934,10 @@ export default function ChatPage() {
           onPickFiles={handlePickFiles}
           onRemoveAttachment={handleRemoveAttachment}
           uploading={uploading}
-          formulaText={formulaText}
-          onFormulaTextChange={setFormulaText}
           imageOptions={imageOptions}
           onImageOptionsChange={setImageOptions}
+          dbQueryMode={dbQueryMode}
+          onToggleDbQueryMode={() => setDbQueryMode((prev) => !prev)}
         />
       </section>
     </main>

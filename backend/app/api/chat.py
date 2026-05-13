@@ -181,7 +181,7 @@ async def send_thread_message(
     if request.negative_prompt:
         image_intent.negative_prompt = request.negative_prompt
 
-    if image_intent.triggered:
+    if image_intent.triggered and not request.db_query_mode:
         generated_items = await ImageGenerationService.generate_images(
             user_key=str(current_user.id),
             prompt=image_intent.prompt,
@@ -239,10 +239,14 @@ async def send_thread_message(
     # Generate assistant response from the previous 5 thread-local turns.
     history = await ChatService.get_thread_memory(db, current_user.id, thread.id)
     ai_response = await ChatService.generate_response(
+        db,
         current_user.email,
         request.message,
         history,
         attachments=linked_attachments,
+        user_id=current_user.id,
+        thread_id=thread.id,
+        db_query_mode=request.db_query_mode,
     )
 
     # Save assistant response.

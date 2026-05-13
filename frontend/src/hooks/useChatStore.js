@@ -1,11 +1,21 @@
 import { create } from "zustand";
 
+function getThreadTimestamp(thread) {
+  const value = thread?.updatedAt || thread?.createdAt;
+  const timestamp = value ? new Date(value).getTime() : 0;
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function sortThreadsNewestFirst(threads) {
+  return [...threads].sort((a, b) => getThreadTimestamp(b) - getThreadTimestamp(a));
+}
+
 export const useChatStore = create((set) => ({
   threads: [],
   activeThreadId: null,
   messages: [],
 
-  setThreads: (threads) => set({ threads }),
+  setThreads: (threads) => set({ threads: sortThreadsNewestFirst(threads) }),
 
   setActiveThread: (threadId) => set({ activeThreadId: threadId }),
 
@@ -13,13 +23,15 @@ export const useChatStore = create((set) => ({
     set((state) => {
       const exists = state.threads.some((candidate) => candidate.id === thread.id);
       if (!exists) {
-        return { threads: [thread, ...state.threads] };
+        return { threads: sortThreadsNewestFirst([thread, ...state.threads]) };
       }
 
+      const updated = state.threads.map((candidate) =>
+        candidate.id === thread.id ? { ...candidate, ...thread } : candidate
+      );
+
       return {
-        threads: state.threads.map((candidate) =>
-          candidate.id === thread.id ? { ...candidate, ...thread } : candidate
-        ),
+        threads: sortThreadsNewestFirst(updated),
       };
     }),
 

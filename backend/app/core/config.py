@@ -14,6 +14,13 @@ class Settings(BaseSettings):
     
     # Database
     DATABASE_URL: str
+    DB_QA_ENABLED: bool = True
+    DB_QA_COMMAND_PREFIX: str = "/db"
+    DB_QA_ALLOWED_SCHEMAS: str = "public"
+    DB_QA_ALLOWED_TABLES: str = ""
+    DB_QA_BLOCKED_TABLES: str = "users,messages,threads,attachments"
+    DB_QA_MAX_ROWS: int = 50
+    DB_QA_MAX_COLUMNS_PER_TABLE: int = 40
     
     # LiteLLM Proxy
     LITELLM_PROXY_URL: str
@@ -55,7 +62,12 @@ class Settings(BaseSettings):
     MAX_TABLE_UPLOAD_MB: int = 20
     MAX_CODE_UPLOAD_MB: int = 10
     MAX_FORMULA_UPLOAD_MB: int = 2
+    MAX_PDF_UPLOAD_MB: int = 30
     MAX_ATTACHMENT_CONTEXT_CHARS: int = 12000
+    PDF_RAG_CHUNK_SIZE: int = 1400
+    PDF_RAG_CHUNK_OVERLAP: int = 200
+    PDF_RAG_TOP_K: int = 4
+    PDF_RAG_MAX_CONTEXT_CHARS: int = 9000
     
     class Config:
         env_file = str(ENV_FILE_PATH)

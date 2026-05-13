@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import base64
 from datetime import datetime, timedelta
 from pathlib import Path
 import uuid
 from typing import Any
+import logging
 
 from fastapi import HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai.rag import PdfRagService
 from app.models.attachment import Attachment
 from app.models.message import Message
 from app.models.user import User
@@ -18,7 +21,74 @@ from app.services.attachments.storage import make_storage_path
 from app.services.attachments.validator import validate_upload
 
 
+logger = logging.getLogger(__name__)
+
+
 class AttachmentService:
+    @staticmethod
+    def _guess_mime_type_from_path(path: Path) -> str:
+        suffix = path.suffix.lower()
+        if suffix in {".jpg", ".jpeg"}:
+            return "image/jpeg"
+        if suffix == ".png":
+            return "image/png"
+        if suffix == ".webp":
+            return "image/webp"
+        if suffix == ".gif":
+            return "image/gif"
+        if suffix == ".bmp":
+            return "image/bmp"
+        if suffix == ".svg":
+            return "image/svg+xml"
+        return "application/octet-stream"
+
+    @staticmethod
+    def _safe_data_url_from_file(path_str: str) -> str | None:
+        try:
+            path = Path(path_str)
+            if not path.exists() or not path.is_file():
+                return None
+            mime_type = AttachmentService._guess_mime_type_from_path(path)
+            encoded = base64.b64encode(path.read_bytes()).decode("utf-8")
+            return f"data:{mime_type};base64,{encoded}"
+        except Exception:
+            logger.exception("Failed to load visual attachment from path=%s", path_str)
+            return None
+
+    @staticmethod
+    def collect_visual_data_urls(attachments: list[Attachment], max_items: int = 6) -> list[str]:
+        if not attachments or max_items <= 0:
+            return []
+
+        urls: list[str] = []
+        for attachment in attachments:
+            if len(urls) >= max_items:
+                break
+
+            metadata: dict[str, Any] = attachment.metadata_json or {}
+
+            if attachment.file_type == "video":
+                for frame_base64 in metadata.get("keyframes_base64") or []:
+                    if len(urls) >= max_items:
+                        break
+                    urls.append(f"data:image/jpeg;base64,{frame_base64}")
+
+                if len(urls) >= max_items:
+                    continue
+
+                thumbnail_path = metadata.get("thumbnail_path")
+                if isinstance(thumbnail_path, str) and thumbnail_path:
+                    thumbnail_url = AttachmentService._safe_data_url_from_file(thumbnail_path)
+                    if thumbnail_url:
+                        urls.append(thumbnail_url)
+
+            elif attachment.file_type == "image":
+                image_url = AttachmentService._safe_data_url_from_file(attachment.file_path)
+                if image_url:
+                    urls.append(image_url)
+
+        return urls[:max_items]
+
     @staticmethod
     async def upload(
         db: AsyncSession,
@@ -52,6 +122,28 @@ class AttachmentService:
         db.add(attachment)
         await db.commit()
         await db.refresh(attachment)
+
+        if file_type == "pdf":
+            try:
+                rag_metadata = PdfRagService.index_attachment(
+                    user_id=user.id,
+                    thread_id=thread_id,
+                    attachment_id=attachment.id,
+                    file_name=attachment.file_name,
+                    file_path=attachment.file_path,
+                )
+            except Exception:
+                await AttachmentService.delete(db, attachment)
+                raise
+
+            attachment.metadata_json = {
+                **(attachment.metadata_json or {}),
+                "rag_indexed": True,
+                **rag_metadata,
+            }
+            await db.commit()
+            await db.refresh(attachment)
+
         return attachment
 
     @staticmethod
@@ -69,6 +161,12 @@ class AttachmentService:
 
     @staticmethod
     async def delete(db: AsyncSession, attachment: Attachment, auto_commit: bool = True) -> None:
+        if attachment.file_type == "pdf":
+            try:
+                PdfRagService.delete_attachment(attachment.id)
+            except Exception:
+                logger.exception("Failed to remove PDF vectors for attachment=%s", attachment.id)
+
         path = Path(attachment.file_path)
         path.unlink(missing_ok=True)
         await db.delete(attachment)
@@ -142,6 +240,10 @@ class AttachmentService:
                 blocks.append(f"   latex={metadata['latex']}")
             elif attachment.file_type == "image" and metadata.get("base64_preview"):
                 blocks.append("   image_base64_preview=<truncated>")
+            elif attachment.file_type == "video":
+                frame_count = int(metadata.get("keyframe_count") or 0)
+                if frame_count:
+                    blocks.append(f"   visual_keyframes_available={frame_count}")
 
         return "\n".join(blocks)
 

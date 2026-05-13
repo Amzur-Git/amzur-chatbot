@@ -3,12 +3,14 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.orm import selectinload
 from fastapi import HTTPException
+from app.ai.rag import PdfRagService
 from app.models.attachment import Attachment
 from app.models.message import Message
 from app.models.thread import Thread
 from app.ai.llm import client
 from app.core.config import settings
 from app.services.attachment_service import AttachmentService
+from app.services.db_qa_service import DbQaService
 import asyncio
 import logging
 import uuid
@@ -20,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 class ChatService:
     MEMORY_TURNS = 5
+    MAX_VISUAL_INPUTS = 6
 
     @staticmethod
     def _is_missing_attachments_table_error(error: Exception) -> bool:
@@ -284,20 +287,76 @@ class ChatService:
     
     @staticmethod
     async def generate_response(
+        db: AsyncSession,
         user_email: str,
         user_message: str,
         history: list,
         attachments: list[Attachment] | None = None,
+        user_id: uuid.UUID | None = None,
+        thread_id: uuid.UUID | None = None,
+        db_query_mode: bool = False,
     ):
+        db_answer = await DbQaService.answer_question(db, user_message, db_query_mode=db_query_mode)
+        if db_answer:
+            return db_answer
+
         messages = [{"role": msg.role, "content": msg.content} for msg in history]
         attachment_context = AttachmentService.build_ai_context(attachments or [])
+        rag_context = ""
+
+        if user_id and thread_id:
+            try:
+                rag_context = PdfRagService.build_context(
+                    user_id=user_id,
+                    thread_id=thread_id,
+                    query=user_message,
+                    top_k=settings.PDF_RAG_TOP_K,
+                    max_chars=settings.PDF_RAG_MAX_CONTEXT_CHARS,
+                )
+            except Exception:
+                logger.exception(
+                    "PDF retrieval failed for thread=%s user=%s",
+                    thread_id,
+                    user_id,
+                )
 
         content = user_message
+        if rag_context:
+            content = f"{content}\n\n{rag_context}"
         if attachment_context:
             max_chars = settings.MAX_ATTACHMENT_CONTEXT_CHARS
-            content = f"{user_message}\n\n{attachment_context[:max_chars]}"
+            content = f"{content}\n\n{attachment_context[:max_chars]}"
 
-        messages.append({"role": "user", "content": content})
+        visual_inputs = AttachmentService.collect_visual_data_urls(
+            attachments or [],
+            max_items=ChatService.MAX_VISUAL_INPUTS,
+        )
+
+        if visual_inputs:
+            grounded_instruction = (
+                "You are given image frames extracted from uploaded attachments. "
+                "Analyze the visuals directly and identify specific scenes, objects, places, "
+                "or natural phenomena when visible (for example: aurora borealis, skyline, "
+                "mountains, maps on phone screens). "
+                "Do not fallback to generic boilerplate if distinctive visual evidence exists. "
+                "If uncertain, state uncertainty clearly."
+            )
+            user_content: list[dict[str, object]] = [
+                {
+                    "type": "text",
+                    "text": f"{grounded_instruction}\n\nUser request:\n{content}",
+                }
+            ]
+            for data_url in visual_inputs:
+                user_content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": data_url},
+                    }
+                )
+            messages.append({"role": "user", "content": user_content})
+        else:
+            messages.append({"role": "user", "content": content})
 
         try:
             response = client.chat.completions.create(

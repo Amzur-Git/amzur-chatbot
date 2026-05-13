@@ -35,6 +35,17 @@ export default function MessageBubble({
                     PreTag="div"
                     language={match[1]}
                     style={oneDark}
+                    customStyle={{
+                      margin: "0.45rem 0",
+                      padding: "0.56rem 0.7rem",
+                      borderRadius: "7px",
+                    }}
+                    codeTagProps={{
+                      style: {
+                        fontSize: "0.84rem",
+                        lineHeight: 1.45,
+                      },
+                    }}
                   >
                     {codeText}
                   </SyntaxHighlighter>

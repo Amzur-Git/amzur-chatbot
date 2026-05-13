@@ -3,6 +3,10 @@ from __future__ import annotations
 import ast
 import base64
 import re
+import shutil
+import subprocess
+import tempfile
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +30,11 @@ try:
     from pygments.lexers import get_lexer_for_filename
 except Exception:  # pragma: no cover
     get_lexer_for_filename = None
+
+try:
+    from pypdf import PdfReader
+except Exception:  # pragma: no cover
+    PdfReader = None
 
 
 class ImageProcessor:
@@ -120,14 +129,96 @@ class ImageProcessor:
 
 
 class VideoProcessor:
+    MAX_KEYFRAMES = 3
+    MAX_FRAME_WIDTH = 960
+    JPEG_QUALITY = 80
+
+    @staticmethod
+    def _ffmpeg_binary() -> str | None:
+        return shutil.which("ffmpeg")
+
+    @staticmethod
+    def _transcode_to_mp4(file_path: Path) -> Path | None:
+        ffmpeg_bin = VideoProcessor._ffmpeg_binary()
+        if ffmpeg_bin is None:
+            return None
+
+        temp_dir = Path(tempfile.gettempdir()) / "amzur_video_transcodes"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        output_path = temp_dir / f"{file_path.stem}_{uuid.uuid4().hex}.mp4"
+
+        command = [
+            ffmpeg_bin,
+            "-y",
+            "-i",
+            str(file_path),
+            "-an",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            str(output_path),
+        ]
+
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=120,
+            )
+        except Exception:
+            return None
+
+        if completed.returncode != 0 or not output_path.exists():
+            return None
+
+        return output_path
+
+    @staticmethod
+    def _frame_to_base64(frame: Any) -> str | None:
+        height, width = frame.shape[:2]
+        if width > VideoProcessor.MAX_FRAME_WIDTH and width > 0:
+            ratio = VideoProcessor.MAX_FRAME_WIDTH / float(width)
+            resized_height = max(1, int(height * ratio))
+            frame = cv2.resize(frame, (VideoProcessor.MAX_FRAME_WIDTH, resized_height))
+
+        ok, encoded = cv2.imencode(
+            ".jpg",
+            frame,
+            [int(cv2.IMWRITE_JPEG_QUALITY), VideoProcessor.JPEG_QUALITY],
+        )
+        if not ok:
+            return None
+        return base64.b64encode(encoded.tobytes()).decode("utf-8")
+
     @staticmethod
     def process(file_path: Path) -> dict[str, Any]:
         if cv2 is None:
-            raise HTTPException(status_code=500, detail="opencv-python is required for video processing")
+            raise HTTPException(
+                status_code=500,
+                detail="OpenCV is required for video processing. Install opencv-python or opencv-python-headless.",
+            )
 
-        capture = cv2.VideoCapture(str(file_path))
+        processed_path = file_path
+        transcoded_path: Path | None = None
+
+        capture = cv2.VideoCapture(str(processed_path))
         if not capture.isOpened():
-            raise HTTPException(status_code=400, detail="Unable to open video file")
+            transcoded_path = VideoProcessor._transcode_to_mp4(file_path)
+            if transcoded_path is not None:
+                processed_path = transcoded_path
+                capture = cv2.VideoCapture(str(processed_path))
+
+        if not capture.isOpened():
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Unable to open video file. The container/codec may be unsupported by OpenCV. "
+                    "Install ffmpeg on the server to enable automatic transcoding fallback."
+                ),
+            )
 
         fps = capture.get(cv2.CAP_PROP_FPS) or 0.0
         frame_count = capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0.0
@@ -135,35 +226,99 @@ class VideoProcessor:
         height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
         duration_seconds = float(frame_count / fps) if fps > 0 else 0.0
 
-        ok, frame = capture.read()
+        keyframe_indices: list[int] = [0]
+        if frame_count > 1:
+            keyframe_indices.extend(
+                [
+                    max(0, int(frame_count * 0.5)),
+                    max(0, int(frame_count - 1)),
+                ]
+            )
+        # Preserve order and avoid duplicate probes for short videos.
+        keyframe_indices = list(dict.fromkeys(keyframe_indices))[: VideoProcessor.MAX_KEYFRAMES]
+
+        keyframes_base64: list[str] = []
         thumbnail = None
-        if ok:
-            thumbnail_path = make_thumbnail_path(file_path.name)
-            cv2.imwrite(str(thumbnail_path), frame)
-            thumbnail = str(thumbnail_path)
+
+        for index in keyframe_indices:
+            capture.set(cv2.CAP_PROP_POS_FRAMES, float(index))
+            ok, frame = capture.read()
+            if not ok or frame is None:
+                continue
+
+            encoded_frame = VideoProcessor._frame_to_base64(frame)
+            if encoded_frame:
+                keyframes_base64.append(encoded_frame)
+
+            if thumbnail is None:
+                thumbnail_path = make_thumbnail_path(file_path.name)
+                cv2.imwrite(str(thumbnail_path), frame)
+                thumbnail = str(thumbnail_path)
 
         capture.release()
 
-        return {
+        result = {
             "fps": round(fps, 3),
             "frame_count": int(frame_count),
             "duration_seconds": round(duration_seconds, 3),
             "width": width,
             "height": height,
             "thumbnail_path": thumbnail,
+            "keyframes_base64": keyframes_base64,
+            "keyframe_count": len(keyframes_base64),
+            "processing_path": str(processed_path),
+            "transcoded_for_processing": bool(transcoded_path),
         }
+
+        if transcoded_path is not None:
+            try:
+                transcoded_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+        return result
 
 
 class TableProcessor:
     MAX_ROWS_FOR_FULL_PAYLOAD = 150
 
     @staticmethod
-    def process(file_path: Path) -> dict[str, Any]:
+    def _read_frame(file_path: Path) -> pd.DataFrame:
         suffix = file_path.suffix.lower()
-        if suffix == ".csv":
-            frame = pd.read_csv(file_path)
-        else:
-            frame = pd.read_excel(file_path)
+        try:
+            if suffix == ".csv":
+                return pd.read_csv(file_path)
+            if suffix == ".tsv":
+                return pd.read_csv(file_path, sep="\t")
+            if suffix == ".xls":
+                return pd.read_excel(file_path, engine="xlrd")
+            if suffix in {".xlsx", ".xlsm"}:
+                return pd.read_excel(file_path, engine="openpyxl")
+            if suffix == ".xlsb":
+                return pd.read_excel(file_path, engine="pyxlsb")
+            if suffix == ".ods":
+                return pd.read_excel(file_path, engine="odf")
+
+            # Fallback for future spreadsheet extensions if validation allows them.
+            return pd.read_excel(file_path)
+        except ImportError as error:
+            missing_package_match = re.search(r"No module named ['\"]([^'\"]+)['\"]", str(error))
+            missing_package = missing_package_match.group(1) if missing_package_match else None
+            if missing_package:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Failed to process file: missing optional dependency '{missing_package}'. "
+                        f"Install it in the backend environment to read {suffix or 'spreadsheet'} files."
+                    ),
+                ) from error
+            raise HTTPException(status_code=400, detail=f"Failed to process file: {error}") from error
+        except Exception as error:
+            raise HTTPException(status_code=400, detail=f"Failed to process file: {error}") from error
+
+    @staticmethod
+    def process(file_path: Path) -> dict[str, Any]:
+        frame = TableProcessor._read_frame(file_path)
 
         frame = frame.fillna("")
         row_count, col_count = frame.shape
@@ -254,6 +409,46 @@ class FormulaProcessor:
         return not stack
 
 
+class PdfProcessor:
+    MAX_PREVIEW_CHARS = 2000
+
+    @staticmethod
+    def process(file_path: Path) -> dict[str, Any]:
+        if PdfReader is None:
+            raise HTTPException(status_code=500, detail="pypdf is required for PDF processing")
+
+        try:
+            reader = PdfReader(str(file_path))
+        except Exception as error:
+            raise HTTPException(status_code=400, detail=f"Unable to read PDF: {error}") from error
+
+        page_count = len(reader.pages)
+        character_count = 0
+        pages_with_text = 0
+        preview_parts: list[str] = []
+
+        for page in reader.pages:
+            text = (page.extract_text() or "").strip()
+            if not text:
+                continue
+
+            pages_with_text += 1
+            character_count += len(text)
+
+            if len("\n\n".join(preview_parts)) < PdfProcessor.MAX_PREVIEW_CHARS:
+                preview_parts.append(text)
+
+        preview_text = "\n\n".join(preview_parts)[: PdfProcessor.MAX_PREVIEW_CHARS]
+
+        return {
+            "page_count": page_count,
+            "pages_with_text": pages_with_text,
+            "character_count": character_count,
+            "preview_text": preview_text,
+            "preview_truncated": character_count > len(preview_text),
+        }
+
+
 def process_file(file_type: str, file_path: Path) -> dict[str, Any]:
     if file_type == "image":
         return ImageProcessor.process(file_path)
@@ -265,5 +460,7 @@ def process_file(file_type: str, file_path: Path) -> dict[str, Any]:
         return CodeProcessor.process(file_path)
     if file_type == "formula":
         return FormulaProcessor.process(file_path)
+    if file_type == "pdf":
+        return PdfProcessor.process(file_path)
 
     raise HTTPException(status_code=400, detail=f"Unsupported processor for type: {file_type}")

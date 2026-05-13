@@ -9,6 +9,7 @@ class ChatRequest(BaseModel):
     message: str
     attachment_ids: list[uuid.UUID] = Field(default_factory=list)
     formula_text: Optional[str] = None
+    db_query_mode: bool = False
     num_images: Optional[int] = Field(default=None, ge=1, le=4)
     aspect_ratio: Optional[str] = None
     negative_prompt: Optional[str] = None

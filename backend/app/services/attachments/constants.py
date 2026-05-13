@@ -2,7 +2,7 @@ from pathlib import Path
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg"}
 VIDEO_EXTENSIONS = {".mp4", ".webm", ".mov", ".avi"}
-TABLE_EXTENSIONS = {".csv", ".xlsx", ".xls"}
+TABLE_EXTENSIONS = {".csv", ".tsv", ".xlsx", ".xls", ".xlsm", ".xlsb", ".ods"}
 CODE_EXTENSIONS = {
     ".py",
     ".js",
@@ -19,6 +19,7 @@ CODE_EXTENSIONS = {
     ".md",
 }
 FORMULA_EXTENSIONS = {".tex"}
+PDF_EXTENSIONS = {".pdf"}
 
 ALL_SUPPORTED_EXTENSIONS = (
     IMAGE_EXTENSIONS
@@ -26,6 +27,7 @@ ALL_SUPPORTED_EXTENSIONS = (
     | TABLE_EXTENSIONS
     | CODE_EXTENSIONS
     | FORMULA_EXTENSIONS
+    | PDF_EXTENSIONS
 )
 
 CATEGORY_BY_EXTENSION = {
@@ -34,6 +36,7 @@ CATEGORY_BY_EXTENSION = {
     **{ext: "table" for ext in TABLE_EXTENSIONS},
     **{ext: "code" for ext in CODE_EXTENSIONS},
     **{ext: "formula" for ext in FORMULA_EXTENSIONS},
+    **{ext: "pdf" for ext in PDF_EXTENSIONS},
 }
 
 LANGUAGE_BY_EXTENSION = {

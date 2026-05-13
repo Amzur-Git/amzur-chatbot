@@ -1,4 +1,5 @@
 import logging
+import urllib.parse
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,11 +13,45 @@ logger = logging.getLogger("uvicorn.error")
 
 app = FastAPI(title=settings.APP_NAME)
 
+
+def _build_cors_origins() -> list[str]:
+    origins: list[str] = []
+
+    configured = [
+        value.strip()
+        for value in settings.FRONTEND_URLS.split(",")
+        if value.strip()
+    ]
+
+    if settings.FRONTEND_URL:
+        configured.insert(0, settings.FRONTEND_URL)
+
+    for url in configured:
+        try:
+            parsed = urllib.parse.urlparse(url)
+            if not parsed.scheme or not parsed.hostname:
+                continue
+
+            default_port = 443 if parsed.scheme == "https" else 80
+            port_suffix = f":{parsed.port}" if parsed.port and parsed.port != default_port else ""
+            origin = f"{parsed.scheme}://{parsed.hostname}{port_suffix}"
+            if origin not in origins:
+                origins.append(origin)
+
+            # For local development, accept both localhost and 127.0.0.1.
+            if parsed.hostname in {"localhost", "127.0.0.1"}:
+                alternate = "127.0.0.1" if parsed.hostname == "localhost" else "localhost"
+                alternate_origin = f"{parsed.scheme}://{alternate}{port_suffix}"
+                if alternate_origin not in origins:
+                    origins.append(alternate_origin)
+        except Exception:
+            continue
+
+    return origins or ["http://localhost:5173", "http://127.0.0.1:5173"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-    ],
+    allow_origins=_build_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

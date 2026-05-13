@@ -40,6 +40,29 @@ def _canonical_origin(url: str | None) -> str | None:
         return url.rstrip("/")
 
 
+def _is_loopback_hostname(hostname: str | None) -> bool:
+    return (hostname or "").lower() in {"localhost", "127.0.0.1"}
+
+
+def _is_loopback_equivalent_origin(origin_a: str, origin_b: str) -> bool:
+    try:
+        parsed_a = urllib.parse.urlparse(origin_a)
+        parsed_b = urllib.parse.urlparse(origin_b)
+        if not parsed_a.scheme or not parsed_b.scheme:
+            return False
+        if parsed_a.scheme != parsed_b.scheme:
+            return False
+
+        port_a = parsed_a.port or (443 if parsed_a.scheme == "https" else 80)
+        port_b = parsed_b.port or (443 if parsed_b.scheme == "https" else 80)
+        if port_a != port_b:
+            return False
+
+        return _is_loopback_hostname(parsed_a.hostname) and _is_loopback_hostname(parsed_b.hostname)
+    except Exception:
+        return False
+
+
 def _frontend_origins() -> list[str]:
     candidates = []
 
@@ -64,7 +87,14 @@ def _is_allowed_frontend_url(frontend_url: str | None) -> bool:
     normalized = _canonical_origin(frontend_url)
     if not normalized:
         return False
-    return normalized in _frontend_origins()
+
+    for allowed_origin in _frontend_origins():
+        if normalized == allowed_origin:
+            return True
+        if _is_loopback_equivalent_origin(normalized, allowed_origin):
+            return True
+
+    return False
 
 
 def _resolve_frontend_url(frontend_url: str | None) -> str:
@@ -164,8 +194,33 @@ async def google_login(
     if not _oauth_configured():
         raise HTTPException(status_code=503, detail="Google OAuth is not configured")
 
-    state = secrets.token_urlsafe(24)
     redirect_uri = _resolve_google_redirect_uri(request)
+
+    # If we are on a loopback hostname different from the configured redirect URI
+    # host, first hop to that host so oauth_state cookie and callback host match.
+    try:
+        current_host = (request.url.hostname or "").lower()
+        redirect_parsed = urllib.parse.urlparse(redirect_uri)
+        redirect_host = (redirect_parsed.hostname or "").lower()
+
+        if (
+            current_host != redirect_host
+            and _is_loopback_hostname(current_host)
+            and _is_loopback_hostname(redirect_host)
+            and redirect_parsed.scheme
+        ):
+            default_port = 443 if redirect_parsed.scheme == "https" else 80
+            port_suffix = (
+                f":{redirect_parsed.port}" if redirect_parsed.port and redirect_parsed.port != default_port else ""
+            )
+            relay_base = f"{redirect_parsed.scheme}://{redirect_host}{port_suffix}"
+            relay_query = urllib.parse.urlencode({"frontend_url": _resolve_frontend_url(frontend_url)})
+            return RedirectResponse(url=f"{relay_base}{request.url.path}?{relay_query}")
+    except Exception:
+        # Fall through to default behavior if URL parsing fails.
+        pass
+
+    state = secrets.token_urlsafe(24)
     query = urllib.parse.urlencode(
         {
             "client_id": settings.GOOGLE_CLIENT_ID,
