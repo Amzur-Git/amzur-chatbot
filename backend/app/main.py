@@ -7,6 +7,7 @@ from app.api.auth import router as auth_router
 from app.api.chat import router as chat_router
 from app.api.attachments import router as attachments_router
 from app.api.generate_image import router as generate_image_router
+from app.api.research_digest import router as research_digest_router
 from app.api.sheets import router as sheets_router
 from app.core.config import settings
 
@@ -73,6 +74,7 @@ app.include_router(chat_router)
 app.include_router(attachments_router)
 app.include_router(generate_image_router)
 app.include_router(sheets_router)
+app.include_router(research_digest_router)
 
 
 @app.on_event("startup")

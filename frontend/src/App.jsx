@@ -3,6 +3,7 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { BrowserRouter } from "react-router-dom";
 import AuthPage from "./pages/AuthPage";
 import ChatPage from "./pages/ChatPage";
+import ResearchDigestPage from "./pages/ResearchDigestPage";
 import { authApi } from "./lib/api";
 import { useAuthStore } from "./hooks/useAuthStore";
 
@@ -84,6 +85,14 @@ export default function App() {
           element={
             <ProtectedRoute>
               <ChatPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/research-digest"
+          element={
+            <ProtectedRoute>
+              <ResearchDigestPage />
             </ProtectedRoute>
           }
         />

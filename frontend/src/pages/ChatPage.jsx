@@ -1149,7 +1149,16 @@ export default function ChatPage() {
 
       <section className="chat-main">
         <header className="chat-header">
-          <h1>Hello, {greeting}</h1>
+          <div className="chat-header__top-row">
+            <h1>Hello, {greeting}</h1>
+            <button
+              className="secondary-btn chat-header__digest-btn"
+              type="button"
+              onClick={() => navigate("/research-digest")}
+            >
+              Project 10
+            </button>
+          </div>
           <p>Ask a question and your assistant will respond with context-aware guidance.</p>
         </header>
 
