@@ -93,6 +93,7 @@ function buildLocalAttachment(file) {
 }
 
 const IMAGE_OPTIONS_STORAGE_KEY = "amzur-chatbot:image-options";
+const LAST_ACTIVE_THREAD_STORAGE_PREFIX = "amzur-chatbot:last-active-thread:";
 const DEFAULT_IMAGE_OPTIONS = {
   numImages: 1,
   aspectRatio: "1:1",
@@ -124,6 +125,11 @@ function normalizeImageOptions(value) {
         ? candidate.enhancePrompt
         : DEFAULT_IMAGE_OPTIONS.enhancePrompt,
   };
+}
+
+function getLastActiveThreadStorageKey(userEmail) {
+  const normalized = String(userEmail || "").trim().toLowerCase();
+  return `${LAST_ACTIVE_THREAD_STORAGE_PREFIX}${normalized || "anonymous"}`;
 }
 
 export default function ChatPage() {
@@ -429,19 +435,47 @@ export default function ChatPage() {
       pendingCreatedThreadId && activeThreadId === pendingCreatedThreadId
     );
 
+    let preferredThreadId = null;
+    if (typeof window !== "undefined") {
+      try {
+        preferredThreadId = window.localStorage.getItem(getLastActiveThreadStorageKey(user?.email));
+      } catch {
+        preferredThreadId = null;
+      }
+    }
+
     if (
       !hasOptimisticActiveThread &&
       !hasPendingCreatedActiveThread &&
       (!activeThreadId || !mergedThreads.some((thread) => thread.id === activeThreadId))
     ) {
-      setActiveThread(mergedThreads[0]?.id ?? null);
+      const preferred = mergedThreads.find((thread) => thread.id === preferredThreadId);
+      setActiveThread(preferred?.id ?? mergedThreads[0]?.id ?? null);
     }
   }, [
     activeThreadId,
     setActiveThread,
     setThreads,
     threadsQuery.data,
+    user?.email,
   ]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const key = getLastActiveThreadStorageKey(user?.email);
+    try {
+      if (activeThreadId && !String(activeThreadId).startsWith("temp-")) {
+        window.localStorage.setItem(key, String(activeThreadId));
+      } else if (!activeThreadId) {
+        window.localStorage.removeItem(key);
+      }
+    } catch {
+      // Ignore storage errors in private mode/quota-constrained environments.
+    }
+  }, [activeThreadId, user?.email]);
 
   useEffect(() => {
     if (!messagesQuery.data) {
@@ -952,6 +986,14 @@ export default function ChatPage() {
               chatThreadId: destinationThreadId,
             });
 
+        const persistedThreadId = sheetsResponse?.thread_id
+          ? String(sheetsResponse.thread_id)
+          : destinationThreadId;
+
+        if (persistedThreadId && persistedThreadId !== activeThreadId) {
+          setActiveThread(persistedThreadId);
+        }
+
         addMessage({
           ...buildLocalMessage({
             role: "assistant",
@@ -966,7 +1008,7 @@ export default function ChatPage() {
 
         setError("");
         queryClient.invalidateQueries({ queryKey: ["chat-threads", user?.email] });
-        queryClient.invalidateQueries({ queryKey: ["thread-messages", destinationThreadId] });
+        queryClient.invalidateQueries({ queryKey: ["thread-messages", persistedThreadId] });
       } catch (sheetsError) {
         setError(
           extractApiError(
@@ -1151,13 +1193,22 @@ export default function ChatPage() {
         <header className="chat-header">
           <div className="chat-header__top-row">
             <h1>Hello, {greeting}</h1>
-            <button
-              className="secondary-btn chat-header__digest-btn"
-              type="button"
-              onClick={() => navigate("/research-digest")}
-            >
-              Research Digest Agent
-            </button>
+            <div className="chat-header__actions">
+              <button
+                className="secondary-btn chat-header__digest-btn"
+                type="button"
+                onClick={() => navigate("/research-digest")}
+              >
+                Research Digest Agent
+              </button>
+              <button
+                className="secondary-btn chat-header__digest-btn"
+                type="button"
+                onClick={() => navigate("/tic-tac-toe")}
+              >
+                Tic Tac Toe
+              </button>
+            </div>
           </div>
           <p>Ask a question and your assistant will respond with context-aware guidance.</p>
         </header>

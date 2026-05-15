@@ -4,6 +4,7 @@ import { BrowserRouter } from "react-router-dom";
 import AuthPage from "./pages/AuthPage";
 import ChatPage from "./pages/ChatPage";
 import ResearchDigestPage from "./pages/ResearchDigestPage";
+import TicTacToePage from "./pages/TicTacToePage";
 import { authApi } from "./lib/api";
 import { useAuthStore } from "./hooks/useAuthStore";
 
@@ -93,6 +94,14 @@ export default function App() {
           element={
             <ProtectedRoute>
               <ResearchDigestPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/tic-tac-toe"
+          element={
+            <ProtectedRoute>
+              <TicTacToePage />
             </ProtectedRoute>
           }
         />
