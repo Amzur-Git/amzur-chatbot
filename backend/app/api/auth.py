@@ -120,6 +120,11 @@ def _oauth_configured() -> bool:
     return bool(settings.GOOGLE_CLIENT_ID and settings.GOOGLE_CLIENT_SECRET and settings.GOOGLE_REDIRECT_URI)
 
 
+def _google_oauth_scopes() -> str:
+    scopes = (settings.GOOGLE_OAUTH_SCOPES or "").strip()
+    return scopes or "openid email profile"
+
+
 def _resolve_google_redirect_uri(request: Request) -> str:
     callback_uri = str(request.url_for("google_callback"))
     configured_uri = settings.GOOGLE_REDIRECT_URI
@@ -226,9 +231,11 @@ async def google_login(
             "client_id": settings.GOOGLE_CLIENT_ID,
             "redirect_uri": redirect_uri,
             "response_type": "code",
-            "scope": "openid email profile",
+            "scope": _google_oauth_scopes(),
             "state": state,
-            "prompt": "select_account",
+            "prompt": "consent select_account",
+            "access_type": "offline",
+            "include_granted_scopes": "true",
         }
     )
     redirect = RedirectResponse(url=f"https://accounts.google.com/o/oauth2/v2/auth?{query}")
@@ -325,6 +332,7 @@ async def google_callback(
             google_id=google_id,
             full_name=full_name,
         )
+        await AuthService.save_google_oauth_tokens(db, user, token_payload)
         token = AuthService.create_token(user)
 
         redirect = RedirectResponse(url=f"{resolved_frontend_url}/chat")

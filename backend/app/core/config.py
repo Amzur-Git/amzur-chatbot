@@ -48,6 +48,14 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_ID: Optional[str] = None
     GOOGLE_CLIENT_SECRET: Optional[str] = None
     GOOGLE_REDIRECT_URI: Optional[str] = None
+    GOOGLE_OAUTH_SCOPES: str = (
+        "openid email profile "
+        "https://www.googleapis.com/auth/spreadsheets.readonly "
+        "https://www.googleapis.com/auth/drive.readonly"
+    )
+    TOKEN_ENCRYPTION_KEY: Optional[str] = None
+    GOOGLE_SERVICE_ACCOUNT_JSON: Optional[str] = None
+    GOOGLE_SERVICE_ACCOUNT_FILE: Optional[str] = None
     FRONTEND_URL: str = "http://localhost:5173"
     FRONTEND_URLS: str = "http://localhost:5173"
     
@@ -63,6 +71,7 @@ class Settings(BaseSettings):
     MAX_CODE_UPLOAD_MB: int = 10
     MAX_FORMULA_UPLOAD_MB: int = 2
     MAX_PDF_UPLOAD_MB: int = 30
+    SHEETS_UPLOAD_DIR: str = "/mnt/user-data/uploads"
     MAX_ATTACHMENT_CONTEXT_CHARS: int = 12000
     PDF_RAG_CHUNK_SIZE: int = 1400
     PDF_RAG_CHUNK_OVERLAP: int = 200

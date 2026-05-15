@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, Boolean, Index, func
+from sqlalchemy import Column, String, DateTime, Boolean, Index, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
@@ -14,6 +14,11 @@ class User(Base):
     email = Column(String, unique=True, nullable=False, index=True)
     hashed_password = Column(String, nullable=True)  # Null for Google OAuth users
     google_id = Column(String, nullable=True, unique=True)  # For Google OAuth
+    google_oauth_access_token_encrypted = Column(Text, nullable=True)
+    google_oauth_refresh_token_encrypted = Column(Text, nullable=True)
+    google_oauth_token_expires_at = Column(DateTime(timezone=True), nullable=True)
+    google_oauth_scopes = Column(Text, nullable=True)
+    google_oauth_updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
     full_name = Column(String, nullable=True)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)

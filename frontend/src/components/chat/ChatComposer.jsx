@@ -13,9 +13,23 @@ export default function ChatComposer({
   onImageOptionsChange,
   dbQueryMode,
   onToggleDbQueryMode,
+  sheetsQueryMode,
+  onToggleSheetsQueryMode,
+  sheetsFile,
+  onPickSheetsFiles,
+  onClearSheetsFile,
+  sheetsUrlValue,
+  onChangeSheetsUrlValue,
+  onLoadSheetsUrl,
+  onClearSheetsUrl,
+  sheetsUrlIsValid,
+  sheetsPreview,
+  loadingSheetsPreview,
+  sheetsSourceType,
   focusKey,
 }) {
   const fileInputRef = useRef(null);
+  const sheetsFileInputRef = useRef(null);
   const textareaRef = useRef(null);
 
   const updateImageOptions = (patch) => {
@@ -67,12 +81,39 @@ export default function ChatComposer({
     event.target.value = "";
   };
 
+  const handleSheetsFilesChange = (event) => {
+    const files = Array.from(event.target.files || []);
+    if (files.length > 0) {
+      onPickSheetsFiles(files);
+    }
+    event.target.value = "";
+  };
+
+  const handleSheetsDrop = (event) => {
+    event.preventDefault();
+    if (sending || uploading || loadingSheetsPreview) {
+      return;
+    }
+
+    const droppedFiles = Array.from(event.dataTransfer?.files || []);
+    if (droppedFiles.length === 0) {
+      return;
+    }
+
+    const supported = droppedFiles.filter((file) => /\.(csv|xlsx)$/i.test(file.name));
+    if (supported.length > 0) {
+      onPickSheetsFiles([supported[0]]);
+    }
+  };
+
   const handleTextareaKeyDown = (event) => {
     if (event.key !== "Enter" || event.shiftKey || event.nativeEvent?.isComposing) {
       return;
     }
 
-    const canSend = !sending && !uploading && (value.trim() || attachments?.length > 0);
+    const canSend = sheetsQueryMode
+      ? !sending && !uploading && !loadingSheetsPreview && Boolean(value.trim())
+      : !sending && !uploading && (value.trim() || attachments?.length > 0);
     if (!canSend) {
       return;
     }
@@ -81,8 +122,50 @@ export default function ChatComposer({
     onSend();
   };
 
+  const canSubmit = sheetsQueryMode
+    ? !sending && !uploading && !loadingSheetsPreview && Boolean(value.trim())
+    : !sending && !uploading && (Boolean(value.trim()) || Boolean(attachments?.length > 0));
+
+  const renderSheetsPreviewTable = () => {
+    if (!sheetsPreview?.head?.length || !sheetsPreview?.columns?.length) {
+      return null;
+    }
+
+    return (
+      <div className="composer-sheets-preview-table-wrap">
+        <table>
+          <thead>
+            <tr>
+              {sheetsPreview.columns.slice(0, 5).map((column) => (
+                <th key={column}>{column}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {sheetsPreview.head.slice(0, 5).map((row, index) => (
+              <tr key={`preview-row-${index}`}>
+                {sheetsPreview.columns.slice(0, 5).map((column) => (
+                  <td key={`${column}-${index}`}>{String(row[column] ?? "")}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  };
+
   return (
     <form className="chat-composer" onSubmit={handleSubmit}>
+      <input
+        ref={sheetsFileInputRef}
+        type="file"
+        accept=".csv,.xlsx"
+        className="composer-file-input"
+        onChange={handleSheetsFilesChange}
+        disabled={sending || uploading || loadingSheetsPreview}
+      />
+
       <input
         ref={fileInputRef}
         type="file"
@@ -92,7 +175,99 @@ export default function ChatComposer({
         disabled={sending || uploading}
       />
 
-      {attachments?.length ? (
+      {sheetsQueryMode ? (
+        <section
+          className="composer-sheets-panel"
+          onDragOver={(event) => event.preventDefault()}
+          onDrop={handleSheetsDrop}
+        >
+          <div className="composer-sheets-panel__top-row">
+            <p className="composer-sheets-panel__title">Sheets Query Source</p>
+            {(sheetsFile || sheetsSourceType === "google_sheet") ? (
+              <button
+                className="text-btn"
+                type="button"
+                onClick={sheetsSourceType === "file" ? onClearSheetsFile : onClearSheetsUrl}
+                disabled={sending || loadingSheetsPreview}
+              >
+                Clear source
+              </button>
+            ) : null}
+          </div>
+
+          <div className="composer-sheets-upload-row">
+            <button
+              className="secondary-btn"
+              type="button"
+              onClick={() => sheetsFileInputRef.current?.click()}
+              disabled={sending || uploading || loadingSheetsPreview}
+            >
+              Upload CSV/XLSX
+            </button>
+            <span className="muted">or drag and drop a file here</span>
+          </div>
+
+          <div className="composer-sheets-url-row">
+            <input
+              type="url"
+              value={sheetsUrlValue}
+              onChange={(event) => onChangeSheetsUrlValue(event.target.value)}
+              placeholder="Paste Google Sheets URL"
+              disabled={sending || uploading || loadingSheetsPreview}
+              aria-label="Google Sheets URL"
+            />
+            <button
+              className="secondary-btn"
+              type="button"
+              onClick={onLoadSheetsUrl}
+              disabled={!sheetsUrlIsValid || sending || uploading || loadingSheetsPreview}
+            >
+              Load Sheet
+            </button>
+          </div>
+
+          {!sheetsUrlIsValid && sheetsUrlValue.trim() ? (
+            <p className="error-text composer-sheets-error">
+              Invalid Google Sheets URL. Use a URL like docs.google.com/spreadsheets/d/...
+            </p>
+          ) : null}
+
+          {sheetsFile ? (
+            <div className="composer-sheets-source-pill">
+              <span>
+                {sheetsFile.file_name} {sheetsFile.file_size ? `(${Math.round(sheetsFile.file_size / 1024)} KB)` : ""}
+              </span>
+              <span className="muted">
+                {sheetsFile.uploading ? `Uploading ${sheetsFile.progress ?? 0}%` : "File loaded"}
+              </span>
+            </div>
+          ) : null}
+
+          {sheetsSourceType === "google_sheet" ? (
+            <div className="composer-sheets-source-pill">
+              <span>Google Sheet loaded</span>
+              <span className="muted">Ready for follow-up analysis</span>
+            </div>
+          ) : null}
+
+          {loadingSheetsPreview ? (
+            <p className="muted composer-sheets-loading">Loading preview...</p>
+          ) : null}
+
+          {sheetsPreview ? (
+            <details className="composer-sheets-preview" open>
+              <summary>
+                Preview: {sheetsPreview.dataframe_info?.rows ?? "?"} rows x {sheetsPreview.dataframe_info?.columns ?? "?"} columns
+              </summary>
+              {renderSheetsPreviewTable()}
+            </details>
+          ) : null}
+
+          <p className="composer-sheets-note">
+            For safety and performance, use trusted sources and keep datasets under 5k rows for best responsiveness.
+          </p>
+        </section>
+      ) : attachments?.length ? (
         <div className="composer-attachments">
           {attachments.map((attachment) => (
             <div className="composer-attachment-item" key={attachment.client_id || attachment.id}>
@@ -117,18 +292,40 @@ export default function ChatComposer({
         value={value}
         onChange={(event) => onChange(event.target.value)}
         onKeyDown={handleTextareaKeyDown}
-        placeholder={dbQueryMode ? "Ask a question about your database..." : "Ask anything..."}
+        placeholder={
+          sheetsQueryMode
+            ? "Upload a CSV/Excel file or paste a Google Sheets URL, then ask questions..."
+            : dbQueryMode
+              ? "Ask a question about your database..."
+              : "Ask anything..."
+        }
         rows={2}
-        disabled={sending || uploading}
+        disabled={sending || uploading || loadingSheetsPreview}
       />
 
-      <p className="composer-hint">Press Enter to send</p>
+      <p className="composer-hint">
+        {sheetsQueryMode ? "Press Enter to run sheets analysis" : "Press Enter to send"}
+      </p>
+
+      <button
+        className={`secondary-btn composer-sheets-toggle ${sheetsQueryMode ? "composer-sheets-toggle--active" : ""}`}
+        type="button"
+        onClick={onToggleSheetsQueryMode}
+        disabled={sending || uploading || loadingSheetsPreview}
+        aria-label={sheetsQueryMode ? "Disable Sheets Query Mode" : "Enable Sheets Query Mode"}
+        title={sheetsQueryMode ? "Disable Sheets Query Mode" : "Enable Sheets Query Mode"}
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M4 5h16v14H4z" fill="none" stroke="currentColor" strokeWidth="1.8" />
+          <path d="M4 10h16M9 5v14M15 5v14" fill="none" stroke="currentColor" strokeWidth="1.8" />
+        </svg>
+      </button>
 
       <button
         className={`secondary-btn composer-db-toggle ${dbQueryMode ? "composer-db-toggle--active" : ""}`}
         type="button"
         onClick={onToggleDbQueryMode}
-        disabled={sending || uploading}
+        disabled={sending || uploading || loadingSheetsPreview || sheetsQueryMode}
         aria-label={dbQueryMode ? "Disable DB Query Mode" : "Enable DB Query Mode"}
         title={dbQueryMode ? "Disable DB Query Mode" : "Enable DB Query Mode"}
       >
@@ -139,7 +336,7 @@ export default function ChatComposer({
         </svg>
       </button>
 
-      {!dbQueryMode ? (
+      {!dbQueryMode && !sheetsQueryMode ? (
         <details className="composer-image-popover">
           <summary
             className="secondary-btn composer-image-popover__trigger composer-image-btn"
@@ -223,7 +420,7 @@ export default function ChatComposer({
         className="secondary-btn composer-attach-btn"
         type="button"
         onClick={handlePickClick}
-        disabled={sending || uploading}
+        disabled={sending || uploading || sheetsQueryMode || loadingSheetsPreview}
         aria-label={uploading ? "Uploading files" : "Attach files"}
         title={uploading ? "Uploading files" : "Attach files"}
       >
@@ -244,11 +441,7 @@ export default function ChatComposer({
         type="submit"
         aria-label={sending ? "Sending message" : "Send message"}
         title={sending ? "Sending..." : "Send"}
-        disabled={
-          sending ||
-          uploading ||
-          (!value.trim() && !(attachments?.length > 0))
-        }
+        disabled={!canSubmit}
       >
         <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
           <path

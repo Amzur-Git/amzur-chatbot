@@ -4,6 +4,9 @@ from app.models.user import User
 from app.schemas.user import UserCreate
 from app.core.security import get_password_hash, verify_password, create_access_token
 from typing import Optional
+from datetime import datetime, timedelta, timezone
+
+from app.core.token_encryption import decrypt_token, encrypt_token
 
 
 def _normalize_email(email: str) -> str:
@@ -11,6 +14,20 @@ def _normalize_email(email: str) -> str:
 
 
 class AuthService:
+    @staticmethod
+    def _extract_expiry(token_payload: dict) -> Optional[datetime]:
+        expires_in = token_payload.get("expires_in")
+        if expires_in is None:
+            return None
+
+        try:
+            seconds = int(expires_in)
+        except (TypeError, ValueError):
+            return None
+
+        # Refresh 60s early to avoid edge expiration races.
+        return datetime.now(timezone.utc) + timedelta(seconds=max(seconds - 60, 0))
+
     @staticmethod
     async def create_user(db: AsyncSession, user_data: UserCreate) -> User:
         normalized_email = _normalize_email(user_data.email)
@@ -92,6 +109,36 @@ class AuthService:
         await db.commit()
         await db.refresh(user)
         return user
+
+    @staticmethod
+    async def save_google_oauth_tokens(
+        db: AsyncSession,
+        user: User,
+        token_payload: dict,
+    ) -> None:
+        access_token = token_payload.get("access_token")
+        if not access_token:
+            raise ValueError("No access token present in Google OAuth payload")
+
+        # Google may omit refresh_token for previously-consented users.
+        refresh_token = token_payload.get("refresh_token")
+        if not refresh_token and user.google_oauth_refresh_token_encrypted:
+            refresh_token = decrypt_token(user.google_oauth_refresh_token_encrypted)
+
+        user.google_oauth_access_token_encrypted = encrypt_token(access_token)
+        user.google_oauth_refresh_token_encrypted = (
+            encrypt_token(refresh_token) if refresh_token else None
+        )
+        user.google_oauth_token_expires_at = AuthService._extract_expiry(token_payload)
+
+        scope = token_payload.get("scope")
+        if isinstance(scope, str) and scope.strip():
+            user.google_oauth_scopes = scope.strip()
+
+        user.google_oauth_updated_at = datetime.utcnow()
+
+        await db.commit()
+        await db.refresh(user)
     
     @staticmethod
     def create_token(user: User) -> str:

@@ -4,6 +4,13 @@ function normalizeBaseUrl(url) {
   return String(url || "").replace(/\/+$/, "");
 }
 
+function normalizeDevHostname(hostname) {
+  if (hostname === "0.0.0.0") {
+    return "localhost";
+  }
+  return hostname;
+}
+
 function alignLoopbackHostname(url) {
   if (typeof window === "undefined") {
     return normalizeBaseUrl(url);
@@ -11,8 +18,8 @@ function alignLoopbackHostname(url) {
 
   try {
     const parsed = new URL(url);
-    const pageHostname = window.location.hostname;
-    const loopbackHostnames = new Set(["localhost", "127.0.0.1"]);
+    const pageHostname = normalizeDevHostname(window.location.hostname);
+    const loopbackHostnames = new Set(["localhost", "127.0.0.1", "0.0.0.0"]);
 
     if (
       loopbackHostnames.has(parsed.hostname) &&
@@ -36,7 +43,8 @@ function getConfiguredApiBaseUrl() {
   }
 
   if (typeof window !== "undefined") {
-    return normalizeBaseUrl(`${window.location.protocol}//${window.location.hostname}:8000`);
+    const host = normalizeDevHostname(window.location.hostname);
+    return normalizeBaseUrl(`${window.location.protocol}//${host}:8000`);
   }
 
   return "http://127.0.0.1:8000";
@@ -217,4 +225,52 @@ export const attachmentsApi = {
   },
 
   downloadUrl: (attachmentId) => `${getApiBaseUrl()}/api/attachments/${attachmentId}/download`,
+};
+
+const SHEETS_API_TIMEOUT_MS = 60_000;
+
+export const sheetsApi = {
+  loadPreview: async ({ sheetUrl = null, fileId = null }) => {
+    const response = await apiClient.post(
+      "/api/sheets/load-preview",
+      {
+        sheet_url: sheetUrl,
+        file_id: fileId,
+      },
+      {
+        timeout: SHEETS_API_TIMEOUT_MS,
+      }
+    );
+    return response.data;
+  },
+
+  queryFile: async ({ fileId, question, chatThreadId = null }) => {
+    const response = await apiClient.post(
+      "/api/sheets/query-file",
+      {
+        file_id: fileId,
+        question,
+        chat_thread_id: chatThreadId,
+      },
+      {
+        timeout: SHEETS_API_TIMEOUT_MS,
+      }
+    );
+    return response.data;
+  },
+
+  queryGoogleSheet: async ({ sheetUrl, question, chatThreadId = null }) => {
+    const response = await apiClient.post(
+      "/api/sheets/query-google-sheet",
+      {
+        sheet_url: sheetUrl,
+        question,
+        chat_thread_id: chatThreadId,
+      },
+      {
+        timeout: SHEETS_API_TIMEOUT_MS,
+      }
+    );
+    return response.data;
+  },
 };

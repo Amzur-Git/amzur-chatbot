@@ -559,6 +559,49 @@ a:focus-visible {
   overflow-x: auto;
 }
 
+.bubble__intermediate {
+  margin-top: 0.65rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  padding-top: 0.55rem;
+}
+
+.bubble__intermediate summary {
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.bubble__intermediate-list {
+  margin-top: 0.5rem;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.bubble__intermediate-step {
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 0.45rem 0.55rem;
+  font-size: 0.82rem;
+  color: var(--text-main);
+}
+
+.bubble__intermediate-step-head {
+  margin-bottom: 0.3rem;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.bubble__intermediate-step pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.75rem;
+  line-height: 1.3;
+}
+
 .markdown-content p,
 .markdown-content li {
   line-height: 1.46;
@@ -784,7 +827,7 @@ a:focus-visible {
   border-top: 1px solid var(--border-subtle);
   padding-top: 0.55rem;
   display: grid;
-  grid-template-columns: 1fr auto auto auto;
+  grid-template-columns: 1fr auto auto auto auto;
   gap: 0.55rem;
   align-items: end;
 }
@@ -843,6 +886,113 @@ a:focus-visible {
   margin: 0;
   font-size: 0.78rem;
   color: var(--text-muted);
+}
+
+.composer-sheets-panel {
+  grid-column: 1 / -1;
+  border: 1px dashed var(--border-subtle);
+  border-radius: 10px;
+  padding: 0.58rem 0.68rem;
+  display: grid;
+  gap: 0.5rem;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.composer-sheets-panel__top-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.composer-sheets-panel__title {
+  margin: 0;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.composer-sheets-upload-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.composer-sheets-url-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem;
+}
+
+.composer-sheets-url-row input {
+  min-height: 2.05rem;
+  padding: 0.35rem 0.55rem;
+}
+
+.composer-sheets-error,
+.composer-sheets-loading,
+.composer-sheets-note {
+  margin: 0;
+  font-size: 0.78rem;
+}
+
+.composer-sheets-source-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  padding: 0.22rem 0.55rem;
+  width: fit-content;
+  max-width: 100%;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.composer-sheets-source-pill span:first-child {
+  max-width: min(65ch, 100%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-sheets-preview {
+  border: 1px solid var(--border-subtle);
+  border-radius: 9px;
+  padding: 0.45rem 0.55rem;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.composer-sheets-preview summary {
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.composer-sheets-preview-table-wrap {
+  margin-top: 0.5rem;
+  overflow: auto;
+}
+
+.composer-sheets-preview-table-wrap table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.83rem;
+  min-width: 420px;
+}
+
+.composer-sheets-preview-table-wrap th,
+.composer-sheets-preview-table-wrap td {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  padding: 0.34rem 0.45rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.composer-sheets-preview-table-wrap th {
+  background: #2d2d2d;
 }
 
 .composer-image-popover {
@@ -957,6 +1107,7 @@ a:focus-visible {
 
 .composer-attach-btn,
 .composer-db-toggle,
+.composer-sheets-toggle,
 .composer-image-btn,
 .composer-send-btn {
   width: 36px;
@@ -971,6 +1122,7 @@ a:focus-visible {
 
 .composer-attach-btn,
 .composer-db-toggle,
+.composer-sheets-toggle,
 .composer-image-btn {
   border: 1px solid var(--border-strong);
   background: transparent;
@@ -979,12 +1131,20 @@ a:focus-visible {
 
 .composer-attach-btn:hover,
 .composer-db-toggle:hover,
+.composer-sheets-toggle:hover,
 .composer-image-btn:hover {
   background: rgba(255, 255, 255, 0.08);
   border-color: rgba(255, 255, 255, 0.3);
 }
 
+.composer-sheets-toggle--active {
+  background: rgba(245, 158, 11, 0.2);
+  border-color: rgba(245, 158, 11, 0.45);
+  color: #fcd34d;
+}
+
 .composer-db-toggle svg,
+.composer-sheets-toggle svg,
 .composer-image-btn svg,
 .composer-attach-btn svg,
 .composer-send-btn svg {
@@ -1203,8 +1363,12 @@ a:focus-visible {
   }
 
   .chat-composer {
-    grid-template-columns: minmax(0, 1fr) auto auto auto;
+    grid-template-columns: minmax(0, 1fr) auto auto auto auto;
     gap: 0.55rem;
+  }
+
+  .composer-sheets-url-row {
+    grid-template-columns: 1fr;
   }
 
   .composer-image-popover {

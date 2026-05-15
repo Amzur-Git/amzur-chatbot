@@ -5,7 +5,7 @@ import axios from "axios";
 import { ChevronDown } from "lucide-react";
 import MessageBubble from "../components/chat/MessageBubble";
 import ChatComposer from "../components/chat/ChatComposer";
-import { attachmentsApi, authApi, chatApi, extractApiError } from "../lib/api";
+import { attachmentsApi, authApi, chatApi, extractApiError, sheetsApi } from "../lib/api";
 import { useAuthStore } from "../hooks/useAuthStore";
 import { useChatStore } from "../hooks/useChatStore";
 
@@ -42,6 +42,30 @@ function inferFormulaText(text) {
     );
 
   return hasLatexMarker || hasPlainEquation ? value : null;
+}
+
+const SHEETS_QUERY_RATE_LIMIT_MS = 1_500;
+
+function isValidGoogleSheetsUrl(value) {
+  try {
+    const url = new URL(String(value || "").trim());
+    if (!/docs\.google\.com$/i.test(url.hostname)) {
+      return false;
+    }
+    return /^\/spreadsheets\/d\/[a-zA-Z0-9-_]+/i.test(url.pathname);
+  } catch {
+    return false;
+  }
+}
+
+function sanitizeSheetsQuestion(value) {
+  const normalized = String(value || "").replace(/[\u0000-\u001F\u007F]/g, " ").trim();
+  if (!normalized) {
+    return "";
+  }
+
+  // Keep requests reasonably bounded for latency and token safety.
+  return normalized.slice(0, 1_500);
 }
 
 function buildLocalMessage({ role, content }) {
@@ -126,6 +150,14 @@ export default function ChatPage() {
   const [imageStatus, setImageStatus] = useState("idle");
   const [imageStatusMessage, setImageStatusMessage] = useState("");
   const [dbQueryMode, setDbQueryMode] = useState(false);
+  const [sheetsQueryMode, setSheetsQueryMode] = useState(false);
+  const [sheetsFileAttachment, setSheetsFileAttachment] = useState(null);
+  const [sheetsUrlInput, setSheetsUrlInput] = useState("");
+  const [loadedSheetsUrl, setLoadedSheetsUrl] = useState("");
+  const [sheetsPreview, setSheetsPreview] = useState(null);
+  const [loadingSheetsPreview, setLoadingSheetsPreview] = useState(false);
+  const [sheetsQuerying, setSheetsQuerying] = useState(false);
+  const [lastSheetsQueryAt, setLastSheetsQueryAt] = useState(0);
   const [error, setError] = useState("");
   const [lastSendAttempt, setLastSendAttempt] = useState(null);
   const [failedSend, setFailedSend] = useState(null);
@@ -173,6 +205,10 @@ export default function ChatPage() {
   const clearChatState = useChatStore((state) => state.clearChatState);
 
   const uploading = pendingAttachments.some((item) => item.uploading);
+  const hasSheetsFileSource = Boolean(sheetsFileAttachment?.id);
+  const hasSheetsUrlSource = Boolean(loadedSheetsUrl);
+  const sheetsSourceType = hasSheetsFileSource ? "file" : hasSheetsUrlSource ? "google_sheet" : null;
+  const validSheetsUrl = isValidGoogleSheetsUrl(sheetsUrlInput);
 
   const BOTTOM_THRESHOLD_PX = 100;
 
@@ -591,6 +627,10 @@ export default function ChatPage() {
     setMessages([]);
     setInput("");
     setPendingAttachments([]);
+    setSheetsFileAttachment(null);
+    setSheetsUrlInput("");
+    setLoadedSheetsUrl("");
+    setSheetsPreview(null);
     setImageStatus("idle");
     setImageStatusMessage("");
     setLastSendAttempt(null);
@@ -694,6 +734,132 @@ export default function ChatPage() {
     }
   };
 
+  const handleClearSheetsFile = useCallback(() => {
+    setSheetsFileAttachment(null);
+    setSheetsPreview(null);
+    setError("");
+  }, []);
+
+  const handleClearSheetsUrl = useCallback(() => {
+    setLoadedSheetsUrl("");
+    setSheetsPreview(null);
+    setError("");
+  }, []);
+
+  const loadSheetsPreviewFromPayload = useCallback(async ({ fileId = null, sheetUrl = null }) => {
+    setLoadingSheetsPreview(true);
+    try {
+      const preview = await sheetsApi.loadPreview({ fileId, sheetUrl });
+      setSheetsPreview(preview);
+      setError("");
+      return preview;
+    } catch (previewError) {
+      setSheetsPreview(null);
+      throw previewError;
+    } finally {
+      setLoadingSheetsPreview(false);
+    }
+  }, []);
+
+  const handlePickSheetsFiles = useCallback(async (files) => {
+    const selected = Array.isArray(files) ? files[0] : null;
+    if (!selected) {
+      return;
+    }
+
+    const supported = /\.(csv|xlsx)$/i.test(selected.name);
+    if (!supported) {
+      setError("Unsupported file type. Please upload a .csv or .xlsx file.");
+      return;
+    }
+
+    try {
+      let destinationThreadId = activeThreadId;
+      if (!destinationThreadId) {
+        const createdThread = await createThreadMutation.mutateAsync({});
+        destinationThreadId = String(createdThread.id);
+      }
+
+      const local = buildLocalAttachment(selected);
+      setSheetsFileAttachment({
+        ...local,
+      });
+
+      const uploaded = await uploadAttachmentMutation.mutateAsync({
+        threadId: destinationThreadId,
+        file: selected,
+        onUploadProgress: (event) => {
+          const nextProgress = event.total
+            ? Math.round((event.loaded / event.total) * 100)
+            : 0;
+          setSheetsFileAttachment((current) =>
+            current
+              ? {
+                  ...current,
+                  progress: nextProgress,
+                }
+              : current
+          );
+        },
+      });
+
+      const normalizedAttachment = {
+        id: String(uploaded.id),
+        file_name: uploaded.file_name,
+        file_type: uploaded.file_type,
+        file_size: uploaded.file_size,
+        created_at: uploaded.created_at,
+        metadata: uploaded.metadata || {},
+        uploading: false,
+        progress: 100,
+      };
+
+      setSheetsFileAttachment(normalizedAttachment);
+      setLoadedSheetsUrl("");
+      await loadSheetsPreviewFromPayload({ fileId: normalizedAttachment.id, sheetUrl: null });
+    } catch (mutationError) {
+      setSheetsFileAttachment(null);
+      setError(extractApiError(mutationError, "Unable to upload and preview sheet"));
+    }
+  }, [
+    activeThreadId,
+    createThreadMutation,
+    loadSheetsPreviewFromPayload,
+    uploadAttachmentMutation,
+  ]);
+
+  const handleLoadSheetsUrl = useCallback(async () => {
+    const url = sheetsUrlInput.trim();
+    if (!isValidGoogleSheetsUrl(url)) {
+      setError("Invalid Google Sheets URL. Use a URL like docs.google.com/spreadsheets/d/...");
+      return;
+    }
+
+    try {
+      setSheetsFileAttachment(null);
+      setLoadedSheetsUrl(url);
+      await loadSheetsPreviewFromPayload({ fileId: null, sheetUrl: url });
+      setError("");
+    } catch (previewError) {
+      setLoadedSheetsUrl("");
+      setError(extractApiError(previewError, "Unable to load Google Sheet preview"));
+    }
+  }, [loadSheetsPreviewFromPayload, sheetsUrlInput]);
+
+  const handleToggleDbQueryMode = useCallback(() => {
+    setDbQueryMode((previous) => !previous);
+    if (!dbQueryMode) {
+      setSheetsQueryMode(false);
+    }
+  }, [dbQueryMode]);
+
+  const handleToggleSheetsQueryMode = useCallback(() => {
+    setSheetsQueryMode((previous) => !previous);
+    if (!sheetsQueryMode) {
+      setDbQueryMode(false);
+    }
+  }, [sheetsQueryMode]);
+
   const handleRenameThread = (thread) => {
     const nextTitle = window.prompt("Rename thread", thread.title);
     if (!nextTitle || !nextTitle.trim()) {
@@ -719,7 +885,108 @@ export default function ChatPage() {
     const content = input.trim();
     const inferredFormulaText = inferFormulaText(content);
     const canSend = content || pendingAttachments.length > 0;
-    if (!canSend || sendMutation.isPending || createThreadMutation.isPending || uploading) {
+    const busy =
+      sendMutation.isPending ||
+      createThreadMutation.isPending ||
+      uploading ||
+      loadingSheetsPreview ||
+      sheetsQuerying;
+
+    if (busy) {
+      return;
+    }
+
+    if (sheetsQueryMode) {
+      const question = sanitizeSheetsQuestion(content);
+      if (!question) {
+        setError("Please enter a question about your sheet.");
+        return;
+      }
+
+      if (!hasSheetsFileSource && !hasSheetsUrlSource) {
+        setError("Load a CSV/XLSX file or Google Sheet before asking questions.");
+        return;
+      }
+
+      const now = Date.now();
+      if (now - lastSheetsQueryAt < SHEETS_QUERY_RATE_LIMIT_MS) {
+        setError("You're asking questions too quickly. Please wait a moment and try again.");
+        return;
+      }
+
+      setLastSheetsQueryAt(now);
+
+      try {
+        let destinationThreadId = activeThreadId;
+        if (!destinationThreadId) {
+          const createdThread = await createThreadMutation.mutateAsync({});
+          destinationThreadId = String(createdThread.id);
+        }
+
+        const localUserMessage = {
+          ...buildLocalMessage({ role: "user", content: question }),
+          attachments: [],
+          metadata: {
+            mode: "sheets",
+          },
+        };
+
+        addMessage(localUserMessage);
+        setInput("");
+        setError("");
+        setSheetsQuerying(true);
+        shouldAutoScrollRef.current = true;
+        setShowJumpToLatest(false);
+        pendingInstantScrollRef.current = true;
+        requestAnimationFrame(() => scrollToBottom("auto"));
+
+        const sheetsResponse = hasSheetsFileSource
+          ? await sheetsApi.queryFile({
+              fileId: sheetsFileAttachment.id,
+              question,
+              chatThreadId: destinationThreadId,
+            })
+          : await sheetsApi.queryGoogleSheet({
+              sheetUrl: loadedSheetsUrl,
+              question,
+              chatThreadId: destinationThreadId,
+            });
+
+        addMessage({
+          ...buildLocalMessage({
+            role: "assistant",
+            content: sheetsResponse?.answer || "No answer returned.",
+          }),
+          attachments: [],
+          metadata: {
+            mode: "sheets",
+            intermediate_steps: sheetsResponse?.intermediate_steps || [],
+          },
+        });
+
+        setError("");
+        queryClient.invalidateQueries({ queryKey: ["chat-threads", user?.email] });
+        queryClient.invalidateQueries({ queryKey: ["thread-messages", destinationThreadId] });
+      } catch (sheetsError) {
+        setError(
+          extractApiError(
+            sheetsError,
+            "Unable to process your sheets query. Try reducing file size or simplifying the question."
+          )
+        );
+
+        if (axios.isAxiosError(sheetsError) && sheetsError.response?.status === 401) {
+          clearAuth();
+          navigate("/auth", { replace: true });
+        }
+      } finally {
+        setSheetsQuerying(false);
+      }
+
+      return;
+    }
+
+    if (!canSend) {
       return;
     }
 
@@ -848,6 +1115,10 @@ export default function ChatPage() {
                     setActiveThread(thread.id);
                     setMessages([]);
                     setPendingAttachments([]);
+                    setSheetsFileAttachment(null);
+                    setSheetsUrlInput("");
+                    setLoadedSheetsUrl("");
+                    setSheetsPreview(null);
                     setError("");
                   }}
                 >
@@ -929,15 +1200,28 @@ export default function ChatPage() {
           value={input}
           onChange={setInput}
           onSend={handleSend}
-          sending={sendMutation.isPending}
+          sending={sendMutation.isPending || sheetsQuerying}
           attachments={pendingAttachments}
           onPickFiles={handlePickFiles}
           onRemoveAttachment={handleRemoveAttachment}
-          uploading={uploading}
+          uploading={uploading || createThreadMutation.isPending}
           imageOptions={imageOptions}
           onImageOptionsChange={setImageOptions}
           dbQueryMode={dbQueryMode}
-          onToggleDbQueryMode={() => setDbQueryMode((prev) => !prev)}
+          onToggleDbQueryMode={handleToggleDbQueryMode}
+          sheetsQueryMode={sheetsQueryMode}
+          onToggleSheetsQueryMode={handleToggleSheetsQueryMode}
+          sheetsFile={sheetsFileAttachment}
+          onPickSheetsFiles={handlePickSheetsFiles}
+          onClearSheetsFile={handleClearSheetsFile}
+          sheetsUrlValue={sheetsUrlInput}
+          onChangeSheetsUrlValue={setSheetsUrlInput}
+          onLoadSheetsUrl={handleLoadSheetsUrl}
+          onClearSheetsUrl={handleClearSheetsUrl}
+          sheetsUrlIsValid={validSheetsUrl}
+          sheetsPreview={sheetsPreview}
+          loadingSheetsPreview={loadingSheetsPreview}
+          sheetsSourceType={sheetsSourceType}
         />
       </section>
     </main>

@@ -11,6 +11,9 @@ export default function MessageBubble({
   retrying = false,
 }) {
   const isUser = message.role === "user";
+  const intermediateSteps = Array.isArray(message?.metadata?.intermediate_steps)
+    ? message.metadata.intermediate_steps
+    : [];
 
   return (
     <article className={`bubble ${isUser ? "bubble--user" : "bubble--assistant"}`}>
@@ -63,6 +66,25 @@ export default function MessageBubble({
       </div>
 
       <AttachmentRenderer attachments={message.attachments || []} />
+
+      {!isUser && intermediateSteps.length > 0 ? (
+        <details className="bubble__intermediate">
+          <summary>Show reasoning steps ({intermediateSteps.length})</summary>
+          <div className="bubble__intermediate-content">
+            {intermediateSteps.map((step, index) => (
+              <div className="bubble__intermediate-item" key={`${message.id}-step-${index}`}>
+                {step?.tool ? <p><strong>Tool:</strong> {String(step.tool)}</p> : null}
+                {step?.tool_input ? <p><strong>Input:</strong> {String(step.tool_input)}</p> : null}
+                {step?.observation ? <p><strong>Observation:</strong> {String(step.observation)}</p> : null}
+                {step?.log ? <p className="muted"><strong>Log:</strong> {String(step.log)}</p> : null}
+                {!step?.tool && !step?.tool_input && !step?.observation && !step?.log ? (
+                  <p>{String(step?.detail || "No details")}</p>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        </details>
+      ) : null}
 
       {isUser && showRetry ? (
         <div className="bubble__retry">
