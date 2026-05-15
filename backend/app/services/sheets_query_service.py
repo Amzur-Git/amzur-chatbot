@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from difflib import get_close_matches
 from typing import Any
 
 import pandas as pd
@@ -59,6 +60,10 @@ _PLAN_ONLY_PATTERN = re.compile(
 
 _TABLE_REQUEST_PATTERN = re.compile(r"\b(table|tabular|markdown table|in a table format|as a table)\b", re.IGNORECASE)
 _SCIENTIFIC_NOTATION_PATTERN = re.compile(r"(?<![A-Za-z0-9_])[-+]?\d+(?:\.\d+)?[eE][+-]?\d+(?![A-Za-z0-9_])")
+_GROUP_BY_PATTERN = re.compile(
+    r"\b(?:split|group)\s+(?:the\s+data\s+)?(?:based\s+on|by)\s+([a-zA-Z0-9_\-/& ]+)",
+    re.IGNORECASE,
+)
 
 
 def _looks_like_plan_only_answer(answer: str) -> bool:
@@ -79,6 +84,41 @@ def _looks_like_plan_only_answer(answer: str) -> bool:
 
 def _is_table_request(question: str) -> bool:
     return bool(_TABLE_REQUEST_PATTERN.search(question or ""))
+
+
+def _normalize_column_token(value: str) -> str:
+    return re.sub(r"\s+", " ", (value or "").strip().lower())
+
+
+def _extract_requested_group_term(question: str) -> str:
+    match = _GROUP_BY_PATTERN.search(question or "")
+    if not match:
+        return ""
+    term = (match.group(1) or "").strip(" .,:;\n\t")
+    return term
+
+
+def _match_column_name(requested_term: str, columns: list[str]) -> str:
+    if not requested_term or not columns:
+        return ""
+
+    normalized_columns = {_normalize_column_token(col): col for col in columns}
+    requested = _normalize_column_token(requested_term)
+
+    # Exact match first.
+    if requested in normalized_columns:
+        return normalized_columns[requested]
+
+    # Handle singular/plural mismatch like "Business Units" vs "Business Unit".
+    if requested.endswith("s") and requested[:-1] in normalized_columns:
+        return normalized_columns[requested[:-1]]
+
+    # Fuzzy fallback for mild misspellings.
+    close = get_close_matches(requested, list(normalized_columns.keys()), n=1, cutoff=0.72)
+    if close:
+        return normalized_columns[close[0]]
+
+    return ""
 
 
 def _format_numeric_token(value: float) -> str:
@@ -134,7 +174,15 @@ def _steps_contain_execution_error(steps: list[dict[str, Any]]) -> bool:
     return False
 
 
-def _build_execution_forcing_question(question: str, *, prefer_table: bool = False) -> str:
+def _steps_contain_invalid_tool_error(steps: list[dict[str, Any]]) -> bool:
+    for step in steps or []:
+        obs = str(step.get("observation", "")).lower()
+        if "not a valid tool" in obs or "try one of" in obs:
+            return True
+    return False
+
+
+def _build_execution_forcing_question(df: pd.DataFrame, question: str, *, prefer_table: bool = False) -> str:
     normalized = (question or "").lower()
     spend_hint = ""
     if "spent" in normalized or "expense" in normalized:
@@ -151,10 +199,28 @@ def _build_execution_forcing_question(question: str, *, prefer_table: bool = Fal
             "Use standard decimal notation for numbers (no scientific notation)."
         )
 
+    columns = [str(col) for col in df.columns]
+    column_hint = ""
+    if columns:
+        column_hint = " Available columns in df are: " + ", ".join(columns) + "."
+
+    grouping_hint = ""
+    requested_group_term = _extract_requested_group_term(question)
+    matched_group_column = _match_column_name(requested_group_term, columns)
+    if matched_group_column:
+        grouping_hint = (
+            f" The user explicitly requested splitting/grouping by '{matched_group_column}'. "
+            f"Group by '{matched_group_column}' and return one row per distinct value in that column. "
+            "Treat other terms in the question as filters or measures, not as replacement group dimensions."
+        )
+
     return (
         "Use Python on the provided pandas DataFrame `df` and compute the final result now. "
+        "The only runnable tool is python_repl_ast; never call pandas methods (like to_dict/to_markdown) as tools. "
+        "If you need to_dict/to_markdown, use them inside Python code executed by python_repl_ast. "
+        "Always use the actual column names from `df` (case-insensitive matching is fine in code, but preserve canonical labels in output). "
         "Do not describe your plan or steps. Return only the final answer with computed values. "
-        f"If grouped totals are requested, include each group and its numeric total.{spend_hint}{format_hint}\n\n"
+        f"If grouped totals are requested, include each group and its numeric total.{spend_hint}{format_hint}{column_hint}{grouping_hint}\n\n"
         f"Question: {question}"
     )
 
@@ -191,7 +257,7 @@ def query_dataframe_with_langchain(df: pd.DataFrame, question: str) -> dict[str,
         raise HTTPException(status_code=500, detail=f"Failed to initialize DataFrame agent: {error}") from error
 
     wants_table = _is_table_request(normalized_question)
-    forced_question = _build_execution_forcing_question(normalized_question, prefer_table=wants_table)
+    forced_question = _build_execution_forcing_question(df, normalized_question, prefer_table=wants_table)
 
     try:
         result = agent.invoke({"input": forced_question})
@@ -204,6 +270,31 @@ def query_dataframe_with_langchain(df: pd.DataFrame, question: str) -> dict[str,
     else:
         answer = str(result).strip()
         steps = []
+
+    had_invalid_tool_error = _steps_contain_invalid_tool_error(steps)
+    if not answer and had_invalid_tool_error:
+        invalid_tool_retry_question = (
+            "Retry and execute the computation now using python_repl_ast only. "
+            "Do not call to_dict/to_markdown as tools; they are pandas methods used inside Python code. "
+            "Return only the final computed answer. "
+            "If grouped totals are requested, include each group and its total.\n\n"
+            f"Question: {normalized_question}"
+        )
+        try:
+            invalid_tool_retry_result = agent.invoke({"input": invalid_tool_retry_question})
+        except Exception:
+            invalid_tool_retry_result = None
+
+        if isinstance(invalid_tool_retry_result, dict):
+            invalid_tool_retry_answer = str(invalid_tool_retry_result.get("output", "")).strip()
+            invalid_tool_retry_steps = _serialize_intermediate_steps(invalid_tool_retry_result.get("intermediate_steps"))
+            if invalid_tool_retry_answer:
+                answer = invalid_tool_retry_answer
+                steps = invalid_tool_retry_steps
+        elif invalid_tool_retry_result is not None:
+            invalid_tool_retry_answer = str(invalid_tool_retry_result).strip()
+            if invalid_tool_retry_answer:
+                answer = invalid_tool_retry_answer
 
     if _looks_like_plan_only_answer(answer) or not answer:
         retry_question = (
@@ -231,6 +322,7 @@ def query_dataframe_with_langchain(df: pd.DataFrame, question: str) -> dict[str,
     # Additional fallback specifically for table-style asks, which can be sensitive to formatting instructions.
     if wants_table and not answer:
         table_retry_question = _build_execution_forcing_question(
+            df,
             normalized_question,
             prefer_table=True,
         ) + (
@@ -280,7 +372,7 @@ def query_dataframe_with_langchain(df: pd.DataFrame, question: str) -> dict[str,
 
     if not answer:
         observed = _extract_best_observation(steps)
-        if _steps_contain_execution_error(steps):
+        if _steps_contain_execution_error(steps) or _steps_contain_invalid_tool_error(steps):
             answer = (
                 "I could not complete this query due to an internal formatting/execution issue while processing the table request. "
                 "Please retry once, or remove the table-format instruction and I will return the computed result."

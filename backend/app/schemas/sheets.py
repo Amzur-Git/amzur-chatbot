@@ -47,6 +47,7 @@ class SheetsQueryResponse(BaseModel):
     answer: str
     intermediate_steps: list[dict[str, Any]] = Field(default_factory=list)
     sheet_name: Optional[str] = None
+    thread_id: Optional[uuid.UUID] = None
     dataframe_info: DataFrameInfo
 
 

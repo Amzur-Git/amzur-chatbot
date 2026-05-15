@@ -14,6 +14,7 @@ from app.services.db_qa_service import DbQaService
 import asyncio
 import logging
 import uuid
+from datetime import datetime
 from typing import Optional
 
 
@@ -281,6 +282,14 @@ class ChatService:
     ):
         message = Message(user_id=user_id, thread_id=thread_id, role=role, content=content)
         db.add(message)
+
+        # Keep thread ordering deterministic after refreshes by bumping recency
+        # whenever a message is added to an existing thread.
+        if thread_id:
+            thread = await ChatService.get_thread(db, user_id, thread_id)
+            if thread:
+                thread.updated_at = datetime.utcnow()
+
         await db.commit()
         await db.refresh(message)
         return message

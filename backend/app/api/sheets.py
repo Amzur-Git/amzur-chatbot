@@ -20,6 +20,7 @@ from app.schemas.sheets import (
     SheetsQueryResponse,
 )
 from app.services.attachment_service import AttachmentService
+from app.services.chat_service import ChatService
 from app.services.sheets_oauth_service import (
     has_user_google_oauth,
     load_sheet_as_dataframe_with_metadata_for_user,
@@ -57,6 +58,41 @@ def _build_preview(df: pd.DataFrame) -> SheetsPreviewData:
     )
 
 
+async def _persist_sheets_chat_if_threaded(
+    db: AsyncSession,
+    current_user: User,
+    chat_thread_id: Optional[Any],
+    question: str,
+    answer: str,
+) -> Any:
+    thread = None
+    if chat_thread_id:
+        thread = await ChatService.get_thread(db, current_user.id, chat_thread_id)
+        if not thread:
+            raise HTTPException(status_code=404, detail="Thread not found")
+    else:
+        existing_threads = await ChatService.list_threads(db, current_user.id)
+        thread = existing_threads[0] if existing_threads else await ChatService.create_thread(db, current_user.id)
+
+    await ChatService.save_message(
+        db,
+        current_user.id,
+        "user",
+        question,
+        thread_id=thread.id,
+    )
+    await ChatService.ensure_thread_title(db, thread, question)
+    await ChatService.save_message(
+        db,
+        current_user.id,
+        "assistant",
+        answer,
+        thread_id=thread.id,
+    )
+
+    return thread.id
+
+
 @router.post("/query-file", response_model=SheetsQueryResponse)
 async def query_uploaded_file(
     request: SheetsQueryFileRequest,
@@ -70,11 +106,21 @@ async def query_uploaded_file(
 
     df = load_file_as_dataframe(attachment.file_path)
     query_result = query_dataframe_with_langchain(df, request.question)
+    answer = str(query_result["answer"])
+
+    persisted_thread_id = await _persist_sheets_chat_if_threaded(
+        db,
+        current_user,
+        request.chat_thread_id,
+        request.question,
+        answer,
+    )
 
     return SheetsQueryResponse(
         success=bool(query_result.get("success", True)),
-        answer=str(query_result["answer"]),
+        answer=answer,
         intermediate_steps=query_result.get("intermediate_steps", []),
+        thread_id=persisted_thread_id,
         dataframe_info=_build_dataframe_info(df),
     )
 
@@ -97,12 +143,22 @@ async def query_google_sheet(
         )
 
     query_result = query_dataframe_with_langchain(df, request.question)
+    answer = str(query_result["answer"])
+
+    persisted_thread_id = await _persist_sheets_chat_if_threaded(
+        db,
+        current_user,
+        request.chat_thread_id,
+        request.question,
+        answer,
+    )
 
     return SheetsQueryResponse(
         success=bool(query_result.get("success", True)),
-        answer=str(query_result["answer"]),
+        answer=answer,
         intermediate_steps=query_result.get("intermediate_steps", []),
         sheet_name=sheet_name,
+        thread_id=persisted_thread_id,
         dataframe_info=_build_dataframe_info(df),
     )
 
