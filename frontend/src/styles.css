@@ -1355,6 +1355,16 @@ a:focus-visible {
   resize: vertical;
 }
 
+.research-form input[type="number"] {
+  -moz-appearance: textfield;
+}
+
+.research-form input[type="number"]::-webkit-inner-spin-button,
+.research-form input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
 .research-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

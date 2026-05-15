@@ -1156,7 +1156,7 @@ export default function ChatPage() {
               type="button"
               onClick={() => navigate("/research-digest")}
             >
-              Project 10
+              Research Digest Agent
             </button>
           </div>
           <p>Ask a question and your assistant will respond with context-aware guidance.</p>

@@ -3,6 +3,33 @@ import { Link } from "react-router-dom";
 
 import { API_BASE_URL } from "../lib/api";
 
+function normalizeBaseUrl(url) {
+  return String(url || "").replace(/\/+$/, "");
+}
+
+function getDigestApiCandidates() {
+  const candidates = [normalizeBaseUrl(API_BASE_URL)];
+
+  if (typeof window !== "undefined") {
+    const host = window.location.hostname === "0.0.0.0" ? "localhost" : window.location.hostname;
+    const scheme = window.location.protocol || "http:";
+    const localFallbacks = [
+      `${scheme}//${host}:8000`,
+      `${scheme}//${host}:8010`,
+      "http://localhost:8000",
+      "http://localhost:8010",
+      "http://127.0.0.1:8000",
+      "http://127.0.0.1:8010",
+    ];
+
+    for (const url of localFallbacks) {
+      candidates.push(normalizeBaseUrl(url));
+    }
+  }
+
+  return [...new Set(candidates.filter(Boolean))];
+}
+
 function parseSseBlock(block) {
   const lines = block.split("\n");
   let event = "message";
@@ -40,7 +67,7 @@ function keepUniqueByEntryId(items) {
 }
 
 export default function ResearchDigestPage() {
-  const [topic, setTopic] = useState("large language model agents for scientific discovery");
+  const [topic, setTopic] = useState("");
   const [maxRounds, setMaxRounds] = useState(3);
   const [papersPerRound, setPapersPerRound] = useState(5);
   const [minPapers, setMinPapers] = useState(6);
@@ -72,6 +99,54 @@ export default function ResearchDigestPage() {
     setStatusLines((prev) => [...prev, text]);
   };
 
+  const openDigestStream = async (payload, signal) => {
+    const endpoint = "/api/research-digest/stream";
+    const candidates = getDigestApiCandidates();
+    let lastNetworkError = null;
+    let lastHttpResponse = null;
+
+    for (const baseUrl of candidates) {
+      try {
+        const response = await fetch(`${baseUrl}${endpoint}`, {
+          method: "POST",
+          credentials: "include",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+          signal,
+        });
+
+        if (response.ok && response.body) {
+          return { response, baseUrl };
+        }
+
+        // A 404 here often means another service is bound on this port.
+        if (response.status === 404 || response.status === 405) {
+          lastHttpResponse = response;
+          continue;
+        }
+
+        return { response, baseUrl };
+      } catch (error) {
+        if (error?.name === "AbortError") {
+          throw error;
+        }
+        lastNetworkError = error;
+      }
+    }
+
+    if (lastNetworkError) {
+      throw lastNetworkError;
+    }
+
+    if (lastHttpResponse) {
+      return { response: lastHttpResponse, baseUrl: candidates[0] };
+    }
+
+    throw new Error("Unable to connect to the research digest service.");
+  };
+
   const handleStop = () => {
     if (abortRef.current) {
       abortRef.current.abort();
@@ -98,20 +173,16 @@ export default function ResearchDigestPage() {
     abortRef.current = controller;
 
     try {
-      const response = await fetch(`${API_BASE_URL}/api/research-digest/stream`, {
-        method: "POST",
-        credentials: "include",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          topic: topic.trim(),
-          max_rounds: Number(maxRounds),
-          papers_per_round: Number(papersPerRound),
-          min_papers: Number(minPapers),
-        }),
-        signal: controller.signal,
-      });
+      const payload = {
+        topic: topic.trim(),
+        max_rounds: Number(maxRounds),
+        papers_per_round: Number(papersPerRound),
+        min_papers: Number(minPapers),
+      };
+      setTopic("");
+
+      const { response, baseUrl } = await openDigestStream(payload, controller.signal);
+      appendStatus(`Connected to ${baseUrl}`);
 
       if (!response.ok || !response.body) {
         throw new Error(`Request failed with status ${response.status}`);
@@ -173,7 +244,9 @@ export default function ResearchDigestPage() {
       }
     } catch (requestError) {
       if (requestError?.name !== "AbortError") {
-        const message = requestError?.message || "Failed to stream research digest.";
+        const message =
+          requestError?.message ||
+          "Failed to stream research digest. If your backend is on a custom port, set VITE_API_BASE_URL.";
         setError(message);
         appendStatus(message);
       }
