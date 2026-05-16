@@ -36,6 +36,7 @@ class ThreadResponse(BaseModel):
 class MessageResponse(BaseModel):
     id: uuid.UUID
     thread_id: Optional[uuid.UUID]
+    parent_message_id: Optional[uuid.UUID] = None
     role: str
     content: str
     attachments: list[AttachmentMetadataResponse] = Field(default_factory=list)
@@ -43,3 +44,26 @@ class MessageResponse(BaseModel):
     
     class Config:
         from_attributes = True
+
+
+class MessageEditRequest(BaseModel):
+    chat_thread_id: uuid.UUID
+    content: str = Field(min_length=1)
+
+
+class MessageRetryRequest(BaseModel):
+    chat_thread_id: uuid.UUID
+
+
+class MessageEditResponse(BaseModel):
+    success: bool
+    updated_message: MessageResponse
+    new_response: MessageResponse
+    deleted_message_ids: list[uuid.UUID] = Field(default_factory=list)
+
+
+class MessageRetryResponse(BaseModel):
+    success: bool
+    parent_message: MessageResponse
+    new_response: MessageResponse
+    deleted_message_ids: list[uuid.UUID] = Field(default_factory=list)

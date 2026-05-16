@@ -1,19 +1,56 @@
+import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
+import { Check, Copy, Pencil, RotateCcw } from "lucide-react";
 import AttachmentRenderer from "../attachments/AttachmentRenderer";
 
 export default function MessageBubble({
   message,
-  showRetry = false,
+  canEdit = false,
+  editing = false,
+  editingValue = "",
+  onEditingChange,
+  onStartEdit,
+  onCancelEdit,
+  onSubmitEdit,
+  editSubmitting = false,
+  canRetry = false,
   onRetry,
   retrying = false,
 }) {
+  const [copyState, setCopyState] = useState("idle");
   const isUser = message.role === "user";
   const intermediateSteps = Array.isArray(message?.metadata?.intermediate_steps)
     ? message.metadata.intermediate_steps
     : [];
+
+  useEffect(() => {
+    if (copyState !== "copied") {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => setCopyState("idle"), 1400);
+    return () => window.clearTimeout(timeout);
+  }, [copyState]);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(String(message.content || ""));
+      setCopyState("copied");
+    } catch {
+      setCopyState("error");
+      window.setTimeout(() => setCopyState("idle"), 1400);
+    }
+  };
+
+  const handleEditSubmit = () => {
+    if (!onSubmitEdit) {
+      return;
+    }
+    onSubmitEdit();
+  };
 
   return (
     <article className={`bubble ${isUser ? "bubble--user" : "bubble--assistant"}`}>
@@ -21,8 +58,76 @@ export default function MessageBubble({
         <span>{isUser ? "You" : "Assistant"}</span>
       </header>
 
+      {!editing ? (
+        <div className="bubble__actions" role="toolbar" aria-label="Message actions">
+          <button
+            type="button"
+            className="bubble__action-btn"
+            onClick={handleCopy}
+            aria-label={copyState === "copied" ? "Copied" : "Copy message"}
+            title={copyState === "copied" ? "Copied" : "Copy"}
+          >
+            {copyState === "copied" ? <Check size={14} /> : <Copy size={14} />}
+          </button>
+
+          {canEdit ? (
+            <button
+              type="button"
+              className="bubble__action-btn"
+              onClick={onStartEdit}
+              aria-label="Edit message"
+              title="Edit"
+              disabled={editSubmitting}
+            >
+              <Pencil size={14} />
+            </button>
+          ) : null}
+
+          {canRetry ? (
+            <button
+              type="button"
+              className="bubble__action-btn"
+              onClick={onRetry}
+              aria-label="Retry response"
+              title="Retry"
+              disabled={retrying}
+            >
+              <RotateCcw size={14} />
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className="bubble__body markdown-content">
-        {isUser ? (
+        {editing ? (
+          <div className="bubble__edit">
+            <textarea
+              value={editingValue}
+              onChange={(event) => onEditingChange?.(event.target.value)}
+              rows={4}
+              disabled={editSubmitting}
+              aria-label="Edit message"
+            />
+            <div className="bubble__edit-actions">
+              <button
+                type="button"
+                className="secondary-btn"
+                onClick={onCancelEdit}
+                disabled={editSubmitting}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="primary-btn"
+                onClick={handleEditSubmit}
+                disabled={editSubmitting || !String(editingValue || "").trim()}
+              >
+                {editSubmitting ? "Saving..." : "Save & Regenerate"}
+              </button>
+            </div>
+          </div>
+        ) : isUser ? (
           <p>{message.content}</p>
         ) : (
           <ReactMarkdown
@@ -84,14 +189,6 @@ export default function MessageBubble({
             ))}
           </div>
         </details>
-      ) : null}
-
-      {isUser && showRetry ? (
-        <div className="bubble__retry">
-          <button type="button" onClick={onRetry} disabled={retrying}>
-            {retrying ? "Retrying..." : "Retry"}
-          </button>
-        </div>
       ) : null}
     </article>
   );

@@ -99,6 +99,45 @@ function buildLocalAttachment(file) {
   };
 }
 
+function toUiAttachment(attachment) {
+  return {
+    id: String(attachment.id),
+    file_type: attachment.file_type,
+    file_name: attachment.file_name,
+    file_size: attachment.file_size,
+    created_at: attachment.created_at,
+    metadata: attachment.metadata || {},
+  };
+}
+
+function toUiMessage(message) {
+  return {
+    id: String(message.id),
+    threadId: message.thread_id ? String(message.thread_id) : null,
+    parentMessageId: message.parent_message_id ? String(message.parent_message_id) : null,
+    role: message.role,
+    content: message.content,
+    createdAt: message.created_at,
+    attachments: (message.attachments || []).map(toUiAttachment),
+  };
+}
+
+function isPersistedUuid(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    String(value || "")
+  );
+}
+
+function isLikelyPersistedMessage(message, activeThreadId) {
+  const messageId = String(message?.id || "").trim();
+  if (!messageId || messageId.startsWith("temp-")) {
+    return false;
+  }
+
+  const threadId = String(message?.threadId || "").trim();
+  return Boolean(activeThreadId) && threadId === String(activeThreadId);
+}
+
 const IMAGE_OPTIONS_STORAGE_KEY = "amzur-chatbot:image-options";
 const LAST_ACTIVE_THREAD_STORAGE_PREFIX = "amzur-chatbot:last-active-thread:";
 const DEFAULT_IMAGE_OPTIONS = {
@@ -174,6 +213,8 @@ export default function ChatPage() {
   const [error, setError] = useState("");
   const [lastSendAttempt, setLastSendAttempt] = useState(null);
   const [failedSend, setFailedSend] = useState(null);
+  const [editingMessageId, setEditingMessageId] = useState(null);
+  const [editingDraft, setEditingDraft] = useState("");
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const chatStreamRef = useRef(null);
   const chatBottomRef = useRef(null);
@@ -502,21 +543,7 @@ export default function ChatPage() {
       return;
     }
 
-    const normalizedMessages = messagesQuery.data.map((message) => ({
-      id: String(message.id),
-      threadId: message.thread_id ? String(message.thread_id) : null,
-      role: message.role,
-      content: message.content,
-      createdAt: message.created_at,
-      attachments: (message.attachments || []).map((attachment) => ({
-        id: String(attachment.id),
-        file_type: attachment.file_type,
-        file_name: attachment.file_name,
-        file_size: attachment.file_size,
-        created_at: attachment.created_at,
-        metadata: attachment.metadata || {},
-      })),
-    }));
+    const normalizedMessages = messagesQuery.data.map(toUiMessage);
     setMessages(normalizedMessages);
   }, [messagesQuery.data, setMessages]);
 
@@ -587,21 +614,18 @@ export default function ChatPage() {
   const sendMutation = useMutation({
     mutationFn: chatApi.sendMessage,
     onSuccess: (assistantMessage) => {
-      const assistantAttachments = (assistantMessage.attachments || []).map((attachment) => ({
-        id: String(attachment.id),
-        file_type: attachment.file_type,
-        file_name: attachment.file_name,
-        file_size: attachment.file_size,
-        created_at: attachment.created_at,
-        metadata: attachment.metadata || {},
-      }));
+      const assistantAttachments = (assistantMessage.attachments || []).map(toUiAttachment);
 
       addMessage(
         {
-          ...buildLocalMessage({
+          id: String(assistantMessage.id || crypto.randomUUID()),
+          threadId: assistantMessage.thread_id ? String(assistantMessage.thread_id) : activeThreadId,
+          parentMessageId: assistantMessage.parent_message_id
+            ? String(assistantMessage.parent_message_id)
+            : null,
           role: "assistant",
           content: assistantMessage.content,
-          }),
+          createdAt: assistantMessage.created_at || new Date().toISOString(),
           attachments: assistantAttachments,
         }
       );
@@ -650,6 +674,54 @@ export default function ChatPage() {
       clearAuth();
       clearChatState();
       navigate("/auth", { replace: true });
+    },
+  });
+
+  const editMessageMutation = useMutation({
+    mutationFn: chatApi.editMessage,
+    onSuccess: (payload) => {
+      const deletedIds = new Set((payload.deleted_message_ids || []).map((item) => String(item)));
+      const updated = toUiMessage(payload.updated_message);
+      const regenerated = toUiMessage(payload.new_response);
+
+      const currentMessages = useChatStore.getState().messages;
+      const kept = currentMessages.filter((item) => !deletedIds.has(String(item.id)));
+      const withoutUpdated = kept.filter((item) => String(item.id) !== updated.id);
+      const next = [...withoutUpdated, updated, regenerated].sort(
+        (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+      );
+      setMessages(next);
+
+      setEditingMessageId(null);
+      setEditingDraft("");
+      setError("");
+      queryClient.invalidateQueries({ queryKey: ["chat-threads", user?.email] });
+      queryClient.invalidateQueries({ queryKey: ["thread-messages", activeThreadId] });
+    },
+    onError: (mutationError) => {
+      setError(extractApiError(mutationError, "Unable to edit message"));
+    },
+  });
+
+  const retryMessageMutation = useMutation({
+    mutationFn: chatApi.retryMessage,
+    onSuccess: (payload) => {
+      const deletedIds = new Set((payload.deleted_message_ids || []).map((item) => String(item)));
+      const regenerated = toUiMessage(payload.new_response);
+
+      const currentMessages = useChatStore.getState().messages;
+      const kept = currentMessages.filter((item) => !deletedIds.has(String(item.id)));
+      const next = [...kept, regenerated].sort(
+        (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+      );
+      setMessages(next);
+
+      setError("");
+      queryClient.invalidateQueries({ queryKey: ["chat-threads", user?.email] });
+      queryClient.invalidateQueries({ queryKey: ["thread-messages", activeThreadId] });
+    },
+    onError: (mutationError) => {
+      setError(extractApiError(mutationError, "Unable to retry message"));
     },
   });
 
@@ -929,6 +1001,39 @@ export default function ChatPage() {
     deleteThreadMutation.mutate({ threadId: thread.id });
   };
 
+  const handleStartEditMessage = (message) => {
+    setEditingMessageId(message.id);
+    setEditingDraft(message.content || "");
+  };
+
+  const handleCancelEditMessage = () => {
+    setEditingMessageId(null);
+    setEditingDraft("");
+  };
+
+  const handleSubmitEditMessage = async (messageId) => {
+    if (!activeThreadId || !String(editingDraft || "").trim()) {
+      return;
+    }
+
+    await editMessageMutation.mutateAsync({
+      threadId: activeThreadId,
+      messageId,
+      content: editingDraft.trim(),
+    });
+  };
+
+  const handleRetryAssistantMessage = async (messageId) => {
+    if (!activeThreadId) {
+      return;
+    }
+
+    await retryMessageMutation.mutateAsync({
+      threadId: activeThreadId,
+      messageId,
+    });
+  };
+
   const handleSend = async () => {
     const content = input.trim();
     const inferredFormulaText = inferFormulaText(content);
@@ -1054,14 +1159,7 @@ export default function ChatPage() {
       }
 
       const readyAttachments = pendingAttachments.filter((item) => item.id && !item.uploading);
-      const messageAttachments = readyAttachments.map((attachment) => ({
-        id: String(attachment.id),
-        file_type: attachment.file_type,
-        file_name: attachment.file_name,
-        file_size: attachment.file_size,
-        created_at: attachment.created_at,
-        metadata: attachment.metadata || {},
-      }));
+      const messageAttachments = readyAttachments.map(toUiAttachment);
 
       const localUserMessage = {
         ...buildLocalMessage({ role: "user", content: content || "[attachment/formula message]" }),
@@ -1242,9 +1340,30 @@ export default function ChatPage() {
               <MessageBubble
                 key={message.id}
                 message={message}
-                showRetry={failedSend?.messageId === message.id}
-                onRetry={handleRetryFailedPrompt}
-                retrying={sendMutation.isPending}
+                canEdit={
+                  message.role === "user" &&
+                  isLikelyPersistedMessage(message, activeThreadId) &&
+                  !sendMutation.isPending &&
+                  !retryMessageMutation.isPending
+                }
+                editing={editingMessageId === message.id}
+                editingValue={editingMessageId === message.id ? editingDraft : message.content}
+                onEditingChange={setEditingDraft}
+                onStartEdit={() => handleStartEditMessage(message)}
+                onCancelEdit={handleCancelEditMessage}
+                onSubmitEdit={() => handleSubmitEditMessage(message.id)}
+                editSubmitting={editMessageMutation.isPending && editingMessageId === message.id}
+                canRetry={
+                  (message.role === "assistant" &&
+                    isLikelyPersistedMessage(message, activeThreadId)) ||
+                  failedSend?.messageId === message.id
+                }
+                onRetry={() =>
+                  failedSend?.messageId === message.id
+                    ? handleRetryFailedPrompt()
+                    : handleRetryAssistantMessage(message.id)
+                }
+                retrying={sendMutation.isPending || retryMessageMutation.isPending}
               />
             ))
           )}

@@ -44,10 +44,10 @@ function getConfiguredApiBaseUrl() {
 
   if (typeof window !== "undefined") {
     const host = normalizeDevHostname(window.location.hostname);
-    return normalizeBaseUrl(`${window.location.protocol}//${host}:8000`);
+    return normalizeBaseUrl(`${window.location.protocol}//${host}:8001`);
   }
 
-  return "http://127.0.0.1:8000";
+  return "http://127.0.0.1:8001";
 }
 
 const currentApiBaseUrl = getConfiguredApiBaseUrl();
@@ -177,6 +177,21 @@ export const chatApi = {
     }
 
     const response = await apiClient.post("/api/chat/send", payload);
+    return response.data;
+  },
+
+  editMessage: async ({ threadId, messageId, content }) => {
+    const response = await apiClient.put(`/api/chat/messages/${messageId}/edit`, {
+      chat_thread_id: threadId,
+      content,
+    });
+    return response.data;
+  },
+
+  retryMessage: async ({ threadId, messageId }) => {
+    const response = await apiClient.post(`/api/chat/messages/${messageId}/retry`, {
+      chat_thread_id: threadId,
+    });
     return response.data;
   },
 

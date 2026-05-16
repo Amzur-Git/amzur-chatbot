@@ -627,6 +627,7 @@ a:focus-visible {
   padding: 11px 14px;
   border: 1px solid var(--border-subtle);
   animation: rise-in 260ms ease;
+  position: relative;
 }
 
 .bubble--user {
@@ -647,6 +648,108 @@ a:focus-visible {
   font-size: 0.76rem;
   opacity: 0.78;
   margin-bottom: 0.32rem;
+}
+
+.bubble__actions {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  opacity: 0;
+  transform: translateY(-2px);
+  pointer-events: none;
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+
+.bubble:hover .bubble__actions,
+.bubble:focus-within .bubble__actions {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.bubble__action-btn {
+  width: 1.8rem;
+  height: 1.8rem;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: rgba(20, 20, 20, 0.88);
+  color: var(--text-main);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.bubble__action-btn:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.3);
+  background: rgba(38, 38, 38, 0.95);
+}
+
+.bubble__action-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.bubble__edit {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.bubble__edit textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 5.3rem;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: rgba(255, 255, 255, 0.06);
+  color: inherit;
+  padding: 0.55rem 0.65rem;
+  font-size: 0.92rem;
+}
+
+.bubble__edit textarea:focus {
+  outline: none;
+  border-color: rgba(255, 255, 255, 0.45);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.12);
+}
+
+.bubble__edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.bubble__edit-actions .secondary-btn,
+.bubble__edit-actions .primary-btn {
+  padding: 0.35rem 0.62rem;
+  font-size: 0.8rem;
+}
+
+.bubble__edit-actions .secondary-btn {
+  border: 1px solid rgba(255, 255, 255, 0.32);
+  background: rgba(18, 18, 18, 0.72);
+  color: #f5f5f5;
+}
+
+.bubble__edit-actions .secondary-btn:hover:not(:disabled) {
+  background: rgba(30, 30, 30, 0.9);
+}
+
+.bubble__edit-actions .primary-btn {
+  border: 1px solid rgba(34, 197, 94, 0.78);
+  background: #166534;
+  color: #ecfdf5;
+}
+
+.bubble__edit-actions .primary-btn:hover:not(:disabled) {
+  background: #15803d;
+}
+
+.bubble__edit-actions .primary-btn:disabled,
+.bubble__edit-actions .secondary-btn:disabled {
+  opacity: 0.62;
 }
 
 .bubble__body {
@@ -773,6 +876,14 @@ a:focus-visible {
 .bubble__retry button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+@media (max-width: 900px) {
+  .bubble__actions {
+    opacity: 1;
+    transform: translateY(0);
+    pointer-events: auto;
+  }
 }
 
 .bubble-attachments {

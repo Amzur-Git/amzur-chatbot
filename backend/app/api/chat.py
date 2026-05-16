@@ -6,6 +6,10 @@ from app.core.deps import get_current_user
 from app.models.user import User
 from app.schemas.chat import (
     ChatRequest,
+    MessageEditRequest,
+    MessageEditResponse,
+    MessageRetryRequest,
+    MessageRetryResponse,
     MessageResponse,
     ThreadCreateRequest,
     ThreadResponse,
@@ -45,6 +49,7 @@ def _to_message_response(message) -> MessageResponse:
     return MessageResponse(
         id=message.id,
         thread_id=message.thread_id,
+        parent_message_id=message.parent_message_id,
         role=message.role,
         content=message.content,
         attachments=_to_attachment_metadata(attachments),
@@ -198,6 +203,7 @@ async def send_thread_message(
             "assistant",
             summary,
             thread_id=thread.id,
+            parent_message_id=user_message.id,
         )
 
         generated_attachments = []
@@ -256,8 +262,64 @@ async def send_thread_message(
         "assistant",
         ai_response,
         thread_id=thread.id,
+        parent_message_id=user_message.id,
     )
     return _to_message_response(message)
+
+
+@router.put("/messages/{message_id}/edit", response_model=MessageEditResponse)
+async def edit_message(
+    message_id: uuid.UUID,
+    request: MessageEditRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    thread = await ChatService.get_thread(db, current_user.id, request.chat_thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+
+    updated_message, new_response, deleted_ids = await ChatService.edit_user_message(
+        db=db,
+        user_id=current_user.id,
+        user_email=current_user.email,
+        thread_id=request.chat_thread_id,
+        message_id=message_id,
+        new_content=request.content,
+    )
+
+    return MessageEditResponse(
+        success=True,
+        updated_message=_to_message_response(updated_message),
+        new_response=_to_message_response(new_response),
+        deleted_message_ids=deleted_ids,
+    )
+
+
+@router.post("/messages/{message_id}/retry", response_model=MessageRetryResponse)
+async def retry_message(
+    message_id: uuid.UUID,
+    request: MessageRetryRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    thread = await ChatService.get_thread(db, current_user.id, request.chat_thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+
+    parent_message, new_response, deleted_ids = await ChatService.retry_assistant_message(
+        db=db,
+        user_id=current_user.id,
+        user_email=current_user.email,
+        thread_id=request.chat_thread_id,
+        message_id=message_id,
+    )
+
+    return MessageRetryResponse(
+        success=True,
+        parent_message=_to_message_response(parent_message),
+        new_response=_to_message_response(new_response),
+        deleted_message_ids=deleted_ids,
+    )
 
 @router.post("/send", response_model=MessageResponse)
 async def send_message(

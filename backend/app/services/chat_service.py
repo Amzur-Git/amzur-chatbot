@@ -142,6 +142,188 @@ class ChatService:
             return messages
 
     @staticmethod
+    async def get_ordered_thread_messages(
+        db: AsyncSession,
+        user_id: uuid.UUID,
+        thread_id: uuid.UUID,
+    ) -> list[Message]:
+        query = (
+            select(Message)
+            .where(
+                Message.user_id == user_id,
+                Message.thread_id == thread_id,
+            )
+            .order_by(Message.created_at.asc(), Message.id.asc())
+        )
+
+        try:
+            result = await db.execute(query.options(selectinload(Message.attachments)))
+            return list(result.scalars().all())
+        except ProgrammingError as error:
+            if not ChatService._is_missing_attachments_table_error(error):
+                raise
+
+            await db.rollback()
+            result = await db.execute(query)
+            messages = list(result.scalars().all())
+            for message in messages:
+                message.attachments = []
+            return messages
+
+    @staticmethod
+    async def _delete_messages_and_attachments(
+        db: AsyncSession,
+        messages_to_delete: list[Message],
+    ) -> list[uuid.UUID]:
+        if not messages_to_delete:
+            return []
+
+        deleted_ids = [message.id for message in messages_to_delete]
+
+        try:
+            attachments_result = await db.execute(
+                select(Attachment).where(Attachment.message_id.in_(deleted_ids))
+            )
+            for attachment in attachments_result.scalars().all():
+                await AttachmentService.delete(db, attachment, auto_commit=False)
+        except ProgrammingError as error:
+            if not ChatService._is_missing_attachments_table_error(error):
+                raise
+            await db.rollback()
+
+        for message in messages_to_delete:
+            await db.delete(message)
+
+        return deleted_ids
+
+    @staticmethod
+    async def edit_user_message(
+        db: AsyncSession,
+        user_id: uuid.UUID,
+        user_email: str,
+        thread_id: uuid.UUID,
+        message_id: uuid.UUID,
+        new_content: str,
+        db_query_mode: bool = False,
+    ) -> tuple[Message, Message, list[uuid.UUID]]:
+        normalized_content = new_content.strip()
+        if not normalized_content:
+            raise HTTPException(status_code=400, detail="Message content cannot be empty")
+
+        messages = await ChatService.get_ordered_thread_messages(db, user_id, thread_id)
+        target_index = next((idx for idx, msg in enumerate(messages) if msg.id == message_id), None)
+        if target_index is None:
+            raise HTTPException(status_code=404, detail="Message not found")
+
+        target_message = messages[target_index]
+        if target_message.role != "user":
+            raise HTTPException(status_code=400, detail="Only user messages can be edited")
+
+        history_before_target = messages[:target_index]
+        messages_after_target = messages[target_index + 1 :]
+
+        target_message.content = normalized_content
+        deleted_ids = await ChatService._delete_messages_and_attachments(db, messages_after_target)
+
+        ai_response = await ChatService.generate_response(
+            db,
+            user_email=user_email,
+            user_message=target_message.content,
+            history=history_before_target,
+            attachments=target_message.attachments,
+            user_id=user_id,
+            thread_id=thread_id,
+            db_query_mode=db_query_mode,
+        )
+
+        assistant_message = Message(
+            user_id=user_id,
+            thread_id=thread_id,
+            role="assistant",
+            content=ai_response,
+            parent_message_id=target_message.id,
+        )
+        db.add(assistant_message)
+
+        thread = await ChatService.get_thread(db, user_id, thread_id)
+        if thread:
+            thread.updated_at = datetime.utcnow()
+
+        await db.commit()
+        await db.refresh(target_message)
+        await db.refresh(assistant_message)
+        return target_message, assistant_message, deleted_ids
+
+    @staticmethod
+    async def retry_assistant_message(
+        db: AsyncSession,
+        user_id: uuid.UUID,
+        user_email: str,
+        thread_id: uuid.UUID,
+        message_id: uuid.UUID,
+        db_query_mode: bool = False,
+    ) -> tuple[Message, Message, list[uuid.UUID]]:
+        messages = await ChatService.get_ordered_thread_messages(db, user_id, thread_id)
+        assistant_index = next((idx for idx, msg in enumerate(messages) if msg.id == message_id), None)
+        if assistant_index is None:
+            raise HTTPException(status_code=404, detail="Message not found")
+
+        assistant_message = messages[assistant_index]
+        if assistant_message.role != "assistant":
+            raise HTTPException(status_code=400, detail="Only assistant messages can be retried")
+
+        parent_user_message: Message | None = None
+        if assistant_message.parent_message_id:
+            parent_user_message = next(
+                (msg for msg in messages if msg.id == assistant_message.parent_message_id and msg.role == "user"),
+                None,
+            )
+
+        if parent_user_message is None:
+            for idx in range(assistant_index - 1, -1, -1):
+                if messages[idx].role == "user":
+                    parent_user_message = messages[idx]
+                    break
+
+        if parent_user_message is None:
+            raise HTTPException(status_code=400, detail="Unable to find parent user message for retry")
+
+        parent_index = next((idx for idx, msg in enumerate(messages) if msg.id == parent_user_message.id), None)
+        history_before_parent = messages[: parent_index or 0]
+        messages_from_assistant = messages[assistant_index:]
+
+        deleted_ids = await ChatService._delete_messages_and_attachments(db, messages_from_assistant)
+
+        ai_response = await ChatService.generate_response(
+            db,
+            user_email=user_email,
+            user_message=parent_user_message.content,
+            history=history_before_parent,
+            attachments=parent_user_message.attachments,
+            user_id=user_id,
+            thread_id=thread_id,
+            db_query_mode=db_query_mode,
+        )
+
+        new_assistant_message = Message(
+            user_id=user_id,
+            thread_id=thread_id,
+            role="assistant",
+            content=ai_response,
+            parent_message_id=parent_user_message.id,
+        )
+        db.add(new_assistant_message)
+
+        thread = await ChatService.get_thread(db, user_id, thread_id)
+        if thread:
+            thread.updated_at = datetime.utcnow()
+
+        await db.commit()
+        await db.refresh(parent_user_message)
+        await db.refresh(new_assistant_message)
+        return parent_user_message, new_assistant_message, deleted_ids
+
+    @staticmethod
     async def get_thread_memory(
         db: AsyncSession,
         user_id: uuid.UUID,
@@ -281,8 +463,15 @@ class ChatService:
         role: str,
         content: str,
         thread_id: Optional[uuid.UUID] = None,
+        parent_message_id: Optional[uuid.UUID] = None,
     ):
-        message = Message(user_id=user_id, thread_id=thread_id, role=role, content=content)
+        message = Message(
+            user_id=user_id,
+            thread_id=thread_id,
+            role=role,
+            content=content,
+            parent_message_id=parent_message_id,
+        )
         db.add(message)
 
         # Keep thread ordering deterministic after refreshes by bumping recency
