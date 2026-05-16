@@ -11,6 +11,8 @@ from app.ai.llm import client
 from app.core.config import settings
 from app.services.attachment_service import AttachmentService
 from app.services.db_qa_service import DbQaService
+from app.services.sheets_query_service import query_dataframe_with_langchain
+from app.services.sheets_service import load_file_as_dataframe
 import asyncio
 import logging
 import uuid
@@ -295,6 +297,37 @@ class ChatService:
         return message
     
     @staticmethod
+    def _answer_table_attachment_question(
+        user_message: str,
+        attachments: list[Attachment] | None,
+    ) -> str:
+        if not attachments:
+            return ""
+
+        table_attachments = [attachment for attachment in attachments if attachment.file_type == "table"]
+        if not table_attachments:
+            return ""
+
+        # Prefer the latest attached table to match user intent in multi-file chats.
+        table_attachments.sort(key=lambda item: item.created_at, reverse=True)
+
+        for attachment in table_attachments:
+            try:
+                dataframe = load_file_as_dataframe(attachment.file_path)
+                result = query_dataframe_with_langchain(dataframe, user_message)
+                answer = str(result.get("answer", "")).strip()
+                if answer:
+                    return answer
+            except Exception:
+                logger.exception(
+                    "Table attachment query failed for attachment=%s file=%s",
+                    attachment.id,
+                    attachment.file_name,
+                )
+
+        return ""
+
+    @staticmethod
     async def generate_response(
         db: AsyncSession,
         user_email: str,
@@ -305,6 +338,11 @@ class ChatService:
         thread_id: uuid.UUID | None = None,
         db_query_mode: bool = False,
     ):
+        if not db_query_mode:
+            table_answer = ChatService._answer_table_attachment_question(user_message, attachments)
+            if table_answer:
+                return table_answer
+
         db_answer = await DbQaService.answer_question(db, user_message, db_query_mode=db_query_mode)
         if db_answer:
             return db_answer

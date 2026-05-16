@@ -220,8 +220,102 @@ def _extract_account_name(question: str) -> str:
     return account
 
 
+def _extract_account_and_dimension_values(question: str) -> tuple[str, list[str]]:
+    raw_account = _extract_account_name(question)
+    if not raw_account:
+        return "", []
+
+    parts = re.split(r"\s+for\s+", raw_account, maxsplit=1, flags=re.IGNORECASE)
+    account_name = (parts[0] or "").strip(" .,:;\n\t")
+
+    if len(parts) == 1:
+        return account_name, []
+
+    dimension_text = (parts[1] or "").strip(" .,:;\n\t")
+    if not dimension_text:
+        return account_name, []
+
+    values = [
+        token.strip(" .,:;\n\t")
+        for token in re.split(r"\s*(?:,|and|&|/)\s*", dimension_text, flags=re.IGNORECASE)
+        if token and token.strip(" .,:;\n\t")
+    ]
+    return account_name, values
+
+
+def _find_month_amount_column(columns: list[str], month: int) -> str:
+    month_labels = [
+        name
+        for name, idx in _MONTH_TO_NUMBER.items()
+        if idx == month
+    ]
+    normalized_candidates = {_normalize_column_token(col): col for col in columns}
+
+    for label in month_labels:
+        if label in normalized_candidates:
+            return normalized_candidates[label]
+
+    return ""
+
+
+def _format_currency_accounting(value: float) -> str:
+    rounded = round(float(value), 2)
+    if abs(rounded - round(rounded)) < 1e-9:
+        amount = f"{abs(int(round(rounded))):,}"
+    else:
+        amount = f"{abs(rounded):,.2f}"
+
+    if rounded < 0:
+        return f"(${amount})"
+    return f"${amount}"
+
+
+def _pick_dimension_column(df: pd.DataFrame, base_mask: pd.Series, account_col: str, dimension_values: list[str]) -> str:
+    if not dimension_values:
+        return ""
+
+    candidates: list[str] = []
+    for col in df.columns:
+        col_name = str(col)
+        if col_name == account_col:
+            continue
+        if not (df[col_name].dtype == object or str(df[col_name].dtype).startswith("string")):
+            continue
+        normalized = _normalize_column_token(col_name)
+        if normalized in {"scenario", "currency"}:
+            continue
+        candidates.append(col_name)
+
+    if not candidates:
+        return ""
+
+    best_col = ""
+    best_terms = -1
+    best_hits = -1
+
+    scoped = df[base_mask]
+    for col in candidates:
+        series = scoped[col].astype(str).str.lower()
+        term_hits = 0
+        total_hits = 0
+        for value in dimension_values:
+            token = value.lower()
+            hits = int(series.str.contains(re.escape(token), na=False).sum())
+            if hits > 0:
+                term_hits += 1
+                total_hits += hits
+        if term_hits > best_terms or (term_hits == best_terms and total_hits > best_hits):
+            best_col = col
+            best_terms = term_hits
+            best_hits = total_hits
+
+    if best_terms <= 0:
+        return ""
+    return best_col
+
+
 def _deterministic_finance_total_answer(df: pd.DataFrame, question: str, wants_table: bool) -> str:
-    account_name = _extract_account_name(question)
+    account_name, dimension_values = _extract_account_and_dimension_values(question)
     year, month = _extract_month_year(question)
     if not account_name or not year or not month:
         return ""
@@ -260,6 +354,10 @@ def _deterministic_finance_total_answer(df: pd.DataFrame, question: str, wants_t
         ],
     )
 
+    month_amount_col = _find_month_amount_column(columns, month)
+    if month_amount_col:
+        amount_col = month_amount_col
+
     if not amount_col:
         numeric_candidates = []
         for col in columns:
@@ -297,7 +395,7 @@ def _deterministic_finance_total_answer(df: pd.DataFrame, question: str, wants_t
         year_series = pd.to_numeric(working[year_col].astype(str).str.extract(r"(\d{4})", expand=False), errors="coerce")
         mask &= year_series == year
 
-    if month_col:
+    if month_col and not month_amount_col:
         month_raw = working[month_col].astype(str).str.strip().str.lower()
         month_num = pd.to_numeric(month_raw, errors="coerce")
         month_name_num = month_raw.map(_MONTH_TO_NUMBER)
@@ -315,8 +413,43 @@ def _deterministic_finance_total_answer(df: pd.DataFrame, question: str, wants_t
     if filtered.empty:
         return "No matching data was found."
 
-    amount_values = _to_numeric_series(filtered[amount_col])
-    total = float(amount_values.fillna(0).abs().sum())
+    amount_values = _to_numeric_series(filtered[amount_col]).fillna(0)
+
+    if dimension_values:
+        dimension_col = _pick_dimension_column(working, mask, account_col, dimension_values)
+        if not dimension_col:
+            return "No matching data was found."
+
+        rows: list[dict[str, Any]] = []
+        for value in dimension_values:
+            value_mask = mask & working[dimension_col].astype(str).str.lower().str.contains(
+                re.escape(value.lower()), na=False
+            )
+            value_filtered = working[value_mask]
+            if value_filtered.empty:
+                continue
+
+            value_total = float(_to_numeric_series(value_filtered[amount_col]).fillna(0).sum())
+            rows.append(
+                {
+                    "Account": account_name,
+                    "Category": value,
+                    "Year": year,
+                    "Month": next(
+                        (name.capitalize() for name, idx in _MONTH_TO_NUMBER.items() if idx == month and len(name) > 3),
+                        str(month),
+                    ),
+                    "Total Spent": _format_currency_accounting(value_total),
+                }
+            )
+
+        if not rows:
+            return "No matching data was found."
+
+        dimension_df = pd.DataFrame(rows)
+        return dimension_df.to_markdown(index=False)
+
+    total = float(amount_values.abs().sum())
 
     month_name = next((name.capitalize() for name, idx in _MONTH_TO_NUMBER.items() if idx == month and len(name) > 3), str(month))
 
