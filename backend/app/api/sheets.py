@@ -7,7 +7,6 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
 from app.core.deps import get_current_user, get_db
 from app.models.user import User
 from app.schemas.sheets import (
@@ -22,20 +21,64 @@ from app.schemas.sheets import (
 from app.services.attachment_service import AttachmentService
 from app.services.chat_service import ChatService
 from app.services.sheets_oauth_service import (
+    diagnose_google_sheet_access_for_user,
     has_user_google_oauth,
     load_sheet_as_dataframe_with_metadata_for_user,
 )
 from app.services.sheets_query_service import query_dataframe_with_langchain
-from app.services.sheets_service import load_file_as_dataframe, load_sheet_as_dataframe_with_metadata
+from app.services.sheets_service import (
+    load_sheet_as_dataframe_with_metadata,
+    load_file_as_dataframe,
+    load_public_sheet_as_dataframe_with_metadata,
+)
 
 router = APIRouter(prefix="/api/sheets", tags=["sheets"])
 
 
-def _service_account_fallback_configured() -> bool:
-    return bool(
-        (settings.GOOGLE_SERVICE_ACCOUNT_JSON or "").strip()
-        or (settings.GOOGLE_SERVICE_ACCOUNT_FILE or "").strip()
-    )
+@router.get("/oauth-diagnose")
+async def oauth_diagnose_sheet_access(
+    sheet_url: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not has_user_google_oauth(current_user):
+        raise HTTPException(
+            status_code=403,
+            detail="Google OAuth is not connected for this user.",
+        )
+
+    return await diagnose_google_sheet_access_for_user(db, current_user, sheet_url)
+
+
+def _load_sheet_for_non_sso(sheet_url: str) -> tuple[pd.DataFrame, str]:
+    """
+    Non-SSO users should first use service-account access (private/shared sheets),
+    then fall back to public CSV export for publicly shared sheets.
+    """
+    try:
+        return load_sheet_as_dataframe_with_metadata(sheet_url)
+    except HTTPException as service_error:
+        try:
+            return load_public_sheet_as_dataframe_with_metadata(sheet_url)
+        except HTTPException as public_error:
+            # If both paths are forbidden, keep service-account guidance first.
+            if service_error.status_code == 403 and public_error.status_code == 403:
+                raise service_error
+            # If service account is unavailable/misconfigured, keep that detail when
+            # public export is also forbidden so users get the right remediation path.
+            if service_error.status_code >= 500:
+                if public_error.status_code == 403:
+                    raise HTTPException(
+                        status_code=service_error.status_code,
+                        detail=(
+                            f"{service_error.detail} "
+                            "Public CSV export is also blocked (403). "
+                            "For private sheets, share the sheet with the service account "
+                            "email or connect Google OAuth."
+                        ),
+                    ) from public_error
+                raise public_error
+            raise
 
 
 def _build_dataframe_info(df: pd.DataFrame) -> DataFrameInfo:
@@ -133,14 +176,8 @@ async def query_google_sheet(
 ) -> SheetsQueryResponse:
     if has_user_google_oauth(current_user):
         df, sheet_name = await load_sheet_as_dataframe_with_metadata_for_user(db, current_user, request.sheet_url)
-    elif _service_account_fallback_configured():
-        # Backward-compatible fallback for environments still using a shared service account.
-        df, sheet_name = load_sheet_as_dataframe_with_metadata(request.sheet_url)
     else:
-        raise HTTPException(
-            status_code=403,
-            detail="Google Sheets is not linked for this account. Sign in with Google to authorize Sheets access.",
-        )
+        df, sheet_name = _load_sheet_for_non_sso(request.sheet_url)
 
     query_result = query_dataframe_with_langchain(df, request.question)
     answer = str(query_result["answer"])
@@ -179,14 +216,8 @@ async def load_sheet_preview(
                 current_user,
                 request.sheet_url,
             )
-        elif _service_account_fallback_configured():
-            # Backward-compatible fallback for environments still using a shared service account.
-            df, sheet_name = load_sheet_as_dataframe_with_metadata(request.sheet_url)
         else:
-            raise HTTPException(
-                status_code=403,
-                detail="Google Sheets is not linked for this account. Sign in with Google to authorize Sheets access.",
-            )
+            df, sheet_name = _load_sheet_for_non_sso(request.sheet_url)
     elif request.file_id:
         attachment = await AttachmentService.get_by_id(db, current_user, request.file_id)
         if attachment.file_type != "table":

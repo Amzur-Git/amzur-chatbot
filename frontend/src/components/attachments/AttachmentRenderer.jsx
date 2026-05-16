@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import katex from "katex";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
@@ -154,11 +154,7 @@ export default function AttachmentRenderer({ attachments }) {
   );
   const [expanded, setExpanded] = useState(Boolean(hasGeneratedImage));
 
-  useEffect(() => {
-    if (hasGeneratedImage) {
-      setExpanded(true);
-    }
-  }, [hasGeneratedImage, attachments?.length]);
+  const isExpanded = hasGeneratedImage ? true : expanded;
 
   if (!attachments || attachments.length === 0) {
     return null;
@@ -169,11 +165,11 @@ export default function AttachmentRenderer({ attachments }) {
       <div className="bubble-attachments__header">
         <span>{attachments.length} attachment{attachments.length > 1 ? "s" : ""}</span>
         <button type="button" onClick={() => setExpanded((current) => !current)}>
-          {expanded ? "Hide" : "Show"}
+          {isExpanded ? "Hide" : "Show"}
         </button>
       </div>
 
-      {expanded ? (
+      {isExpanded ? (
         <div className="bubble-attachments__grid">
           {attachments.map((attachment) => {
             if (attachment.file_type === "image") {

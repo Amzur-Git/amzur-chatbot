@@ -14,6 +14,7 @@ from app.db.session import get_db
 from app.models.user import User
 from app.schemas.user import UserCreate, UserLogin, UserResponse
 from app.services.auth_service import AuthService
+from app.services.sheets_oauth_service import get_google_oauth_runtime_identity
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -121,8 +122,22 @@ def _oauth_configured() -> bool:
 
 
 def _google_oauth_scopes() -> str:
-    scopes = (settings.GOOGLE_OAUTH_SCOPES or "").strip()
-    return scopes or "openid email profile"
+    configured = [s for s in (settings.GOOGLE_OAUTH_SCOPES or "").split() if s]
+    required = [
+        "openid",
+        "email",
+        "profile",
+        "https://www.googleapis.com/auth/spreadsheets.readonly",
+        "https://www.googleapis.com/auth/drive.readonly",
+    ]
+
+    # Always include required scopes even if env overrides GOOGLE_OAUTH_SCOPES.
+    merged: list[str] = []
+    for scope in configured + required:
+        if scope not in merged:
+            merged.append(scope)
+
+    return " ".join(merged)
 
 
 def _resolve_google_redirect_uri(request: Request) -> str:
@@ -189,6 +204,34 @@ async def login(
 @router.get("/me", response_model=UserResponse)
 async def me(current_user: User = Depends(get_current_user)):
     return current_user
+
+
+@router.get("/google/oauth-status")
+async def google_oauth_status(current_user: User = Depends(get_current_user)):
+    raw_scopes = (current_user.google_oauth_scopes or "").strip()
+    scopes = [scope for scope in raw_scopes.split() if scope]
+    return {
+        "google_connected": bool(current_user.google_oauth_access_token_encrypted),
+        "has_refresh_token": bool(current_user.google_oauth_refresh_token_encrypted),
+        "token_expires_at": current_user.google_oauth_token_expires_at,
+        "granted_scopes": scopes,
+        "required_scopes": [
+            "https://www.googleapis.com/auth/spreadsheets.readonly",
+            "https://www.googleapis.com/auth/drive.readonly",
+        ],
+    }
+
+
+@router.get("/google/oauth-debug")
+async def google_oauth_debug(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    identity = await get_google_oauth_runtime_identity(db, current_user)
+    return {
+        "app_user_email": current_user.email,
+        **identity,
+    }
 
 
 @router.get("/google/login")

@@ -1,12 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Iterator
-
-import arxiv
 
 from app.ai.llm import llm
 
@@ -65,7 +64,18 @@ class ResearchDigestService:
                 },
             )
 
-            fetched = cls._search_arxiv(topic=topic, max_results=target_limit)
+            try:
+                fetched = cls._search_arxiv(topic=topic, max_results=target_limit)
+            except Exception as exc:
+                yield cls._sse(
+                    "error",
+                    {
+                        "message": "Search failed while querying arXiv.",
+                        "detail": str(exc),
+                        "round": rounds_used,
+                    },
+                )
+                break
             new_batch: list[PaperRecord] = []
             for record in fetched:
                 if record.entry_id in seen_ids:
@@ -154,28 +164,67 @@ class ResearchDigestService:
 
     @classmethod
     def _search_arxiv(cls, *, topic: str, max_results: int) -> list[PaperRecord]:
-        client = arxiv.Client(page_size=min(max_results, 100), delay_seconds=0.15, num_retries=2)
-        search = arxiv.Search(
-            query=topic,
-            max_results=max_results,
-            sort_by=arxiv.SortCriterion.Relevance,
+        from mcp_simple_arxiv.arxiv_client import ArxivClient, SortBy, SortOrder
+
+        client = ArxivClient()
+        search_result = cls._run_async(
+            client.search(
+                query=topic,
+                max_results=max_results,
+                sort_by=SortBy.RELEVANCE,
+                sort_order=SortOrder.DESCENDING,
+            )
         )
 
         records: list[PaperRecord] = []
-        for result in client.results(search):
-            authors = ", ".join(author.name for author in result.authors[:6])
-            published = result.published.strftime("%Y-%m-%d") if result.published else "Unknown"
+        for paper in search_result.papers:
+            authors_raw = paper.get("authors")
+            if isinstance(authors_raw, list):
+                authors = ", ".join(str(name) for name in authors_raw[:6])
+            else:
+                authors = ""
+
+            paper_id = str(paper.get("id") or "").strip()
+            entry_id = f"https://arxiv.org/abs/{paper_id}" if paper_id else ""
+            url = (
+                str(paper.get("pdf_url") or "").strip()
+                or str(paper.get("abstract_url") or "").strip()
+                or str(paper.get("html_url") or "").strip()
+                or entry_id
+            )
+
             records.append(
                 PaperRecord(
-                    title=result.title.strip(),
-                    summary=" ".join(result.summary.split()),
+                    title=str(paper.get("title") or "").strip(),
+                    summary=" ".join(str(paper.get("summary") or "").split()),
                     authors=authors,
-                    published=published,
-                    url=result.pdf_url or result.entry_id,
-                    entry_id=result.entry_id,
+                    published=cls._normalize_published(str(paper.get("published") or "")),
+                    url=url,
+                    entry_id=entry_id or url,
                 )
             )
         return records
+
+    @staticmethod
+    def _run_async(coro: Any) -> Any:
+        # Keep this service synchronous while calling async MCP-backed client code.
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    @staticmethod
+    def _normalize_published(value: str) -> str:
+        if not value:
+            return "Unknown"
+        text = value.strip()
+        if not text:
+            return "Unknown"
+        try:
+            return datetime.fromisoformat(text.replace("Z", "+00:00")).strftime("%Y-%m-%d")
+        except ValueError:
+            return text.split("T", 1)[0] if "T" in text else text
 
     @classmethod
     def _decide_enough_evidence(

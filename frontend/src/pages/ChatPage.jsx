@@ -36,7 +36,7 @@ function inferFormulaText(text) {
     /[\^_{}]/.test(value);
 
   const hasPlainEquation =
-    /(?:\b[\w\)\]]+\s*(?:=|≈|≃|<=|>=|<|>)\s*[\w\(\[]+\b)/i.test(value) ||
+    /(?:\b[\w)\]]+\s*(?:=|≈|≃|<=|>=|<|>)\s*[[\w(]+\b)/i.test(value) ||
     /(?:\b(?:\d+(?:\.\d+)?|[a-z])\s*[+\-*/^×÷]\s*(?:\d+(?:\.\d+)?|[a-z])(?:\s*[+\-*/^×÷]\s*(?:\d+(?:\.\d+)?|[a-z]))*\b)/i.test(
       value
     );
@@ -59,7 +59,14 @@ function isValidGoogleSheetsUrl(value) {
 }
 
 function sanitizeSheetsQuestion(value) {
-  const normalized = String(value || "").replace(/[\u0000-\u001F\u007F]/g, " ").trim();
+  const normalized = String(value || "")
+    .split("")
+    .map((char) => {
+      const code = char.charCodeAt(0);
+      return code <= 31 || code === 127 ? " " : char;
+    })
+    .join("")
+    .trim();
   if (!normalized) {
     return "";
   }
@@ -379,6 +386,19 @@ export default function ChatPage() {
     staleTime: 15_000,
   });
 
+  const queryLoadError = useMemo(() => {
+    if (threadsQuery.isError) {
+      return extractApiError(threadsQuery.error, "Unable to load chat threads");
+    }
+    if (messagesQuery.isError) {
+      return extractApiError(messagesQuery.error, "Unable to load this conversation");
+    }
+    return "";
+  }, [messagesQuery.error, messagesQuery.isError, threadsQuery.error, threadsQuery.isError]);
+
+  const displayError = queryLoadError || error;
+  const visibleMessages = queryLoadError ? [] : messages;
+
   const uploadAttachmentMutation = useMutation({
     mutationFn: attachmentsApi.upload,
     onError: (mutationError) => {
@@ -547,28 +567,22 @@ export default function ChatPage() {
       return;
     }
 
-    setMessages([]);
-    setError(extractApiError(threadsQuery.error, "Unable to load chat threads"));
-
     if (axios.isAxiosError(threadsQuery.error) && threadsQuery.error.response?.status === 401) {
       clearAuth();
       navigate("/auth", { replace: true });
     }
-  }, [threadsQuery.error, threadsQuery.isError, clearAuth, navigate, setMessages, setError]);
+  }, [threadsQuery.error, threadsQuery.isError, clearAuth, navigate]);
 
   useEffect(() => {
     if (!messagesQuery.isError) {
       return;
     }
 
-    setMessages([]);
-    setError(extractApiError(messagesQuery.error, "Unable to load this conversation"));
-
     if (axios.isAxiosError(messagesQuery.error) && messagesQuery.error.response?.status === 401) {
       clearAuth();
       navigate("/auth", { replace: true });
     }
-  }, [messagesQuery.error, messagesQuery.isError, clearAuth, navigate, setMessages, setError]);
+  }, [messagesQuery.error, messagesQuery.isError, clearAuth, navigate]);
 
   const sendMutation = useMutation({
     mutationFn: chatApi.sendMessage,
@@ -1218,13 +1232,13 @@ export default function ChatPage() {
             <div className="empty-state">
               <p>Loading conversation...</p>
             </div>
-          ) : messages.length === 0 ? (
+          ) : visibleMessages.length === 0 ? (
             <div className="empty-state">
               <p>Start with something simple.</p>
               <p className="muted">Example: Summarize today's priorities in 5 bullet points.</p>
             </div>
           ) : (
-            messages.map((message) => (
+            visibleMessages.map((message) => (
               <MessageBubble
                 key={message.id}
                 message={message}
@@ -1253,7 +1267,7 @@ export default function ChatPage() {
           <p className={`chat-image-status chat-image-status--${imageStatus}`}>{imageStatusMessage}</p>
         ) : null}
 
-        {error ? <p className="error-text chat-error">{error}</p> : null}
+        {displayError ? <p className="error-text chat-error">{displayError}</p> : null}
 
         <ChatComposer
           focusKey={activeThreadId || "new-chat"}

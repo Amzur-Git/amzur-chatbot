@@ -46,7 +46,7 @@ function parseSseBlock(block) {
   }
 
   const rawData = dataLines.join("\n");
-  let data = null;
+  let data;
   try {
     data = rawData ? JSON.parse(rawData) : null;
   } catch {

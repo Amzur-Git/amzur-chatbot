@@ -45,6 +45,45 @@ class DbQaService:
     _QUOTED_NAME_PATTERN = re.compile(r"['\"](?P<name>[^'\"]+)['\"]")
 
     @staticmethod
+    def _normalize_model_sql_text(sql: str) -> str:
+        """Normalize common escaped sequences emitted by model JSON payloads.
+
+        Some model responses double-escape SQL text (for example, ``SELECT\\n...``),
+        which leaves literal backslashes in the final SQL and causes PostgreSQL
+        syntax errors at execution time.
+        """
+        text_value = (sql or "").strip()
+
+        # Occasionally model output is wrapped as a quoted string literal.
+        if len(text_value) >= 2 and text_value[0] == text_value[-1] and text_value[0] in {"'", '"'}:
+            text_value = text_value[1:-1].strip()
+
+        # Decode escaped control characters even when the model over-escapes them
+        # (for example, SELECT\\n... or SELECT\\\\n...).
+        if "\\" in text_value:
+            for _ in range(4):
+                previous = text_value
+                text_value = (
+                    text_value.replace("\\r\\n", "\n")
+                    .replace("\\n", "\n")
+                    .replace("\\r", "\n")
+                    .replace("\\t", " ")
+                )
+
+                # Handle unicode-escaped line breaks that occasionally appear.
+                text_value = re.sub(r"\\+u000a", "\n", text_value, flags=re.IGNORECASE)
+                text_value = re.sub(r"\\+u000d", "\n", text_value, flags=re.IGNORECASE)
+
+                # If a backslash remains directly before a real line break,
+                # strip it so SQL cannot fail at a stray "\\" token.
+                text_value = re.sub(r"\\+\n", "\n", text_value)
+
+                if text_value == previous:
+                    break
+
+        return text_value
+
+    @staticmethod
     def _split_sql_statements(sql: str) -> list[str]:
         statements: list[str] = []
         buffer: list[str] = []
@@ -128,6 +167,7 @@ class DbQaService:
     @staticmethod
     def _extract_first_read_only_statement(sql: str) -> str:
         cleaned = re.sub(r"^```(?:sql)?\s*|\s*```$", "", sql.strip(), flags=re.IGNORECASE | re.DOTALL).strip()
+        cleaned = DbQaService._normalize_model_sql_text(cleaned)
 
         # Model output can include prose before the query; trim to first SELECT/WITH.
         match = re.search(r"\b(select|with)\b", cleaned, flags=re.IGNORECASE)
