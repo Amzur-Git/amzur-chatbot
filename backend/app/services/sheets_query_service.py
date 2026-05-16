@@ -64,6 +64,37 @@ _GROUP_BY_PATTERN = re.compile(
     r"\b(?:split|group)\s+(?:the\s+data\s+)?(?:based\s+on|by)\s+([a-zA-Z0-9_\-/& ]+)",
     re.IGNORECASE,
 )
+_FINANCE_TOTAL_PATTERN = re.compile(
+    r"\btotal\s+(?:spent|expense|cost)\s+on\s+(?P<account>.+?)\s+for\s+(?:(?P<year1>\d{4})\s+(?P<month1>[A-Za-z]+)|(?P<month2>[A-Za-z]+)\s+(?P<year2>\d{4}))\b",
+    re.IGNORECASE,
+)
+
+_MONTH_TO_NUMBER = {
+    "jan": 1,
+    "january": 1,
+    "feb": 2,
+    "february": 2,
+    "mar": 3,
+    "march": 3,
+    "apr": 4,
+    "april": 4,
+    "may": 5,
+    "jun": 6,
+    "june": 6,
+    "jul": 7,
+    "july": 7,
+    "aug": 8,
+    "august": 8,
+    "sep": 9,
+    "sept": 9,
+    "september": 9,
+    "oct": 10,
+    "october": 10,
+    "nov": 11,
+    "november": 11,
+    "dec": 12,
+    "december": 12,
+}
 
 
 def _looks_like_plan_only_answer(answer: str) -> bool:
@@ -148,6 +179,164 @@ def _normalize_scientific_notation(answer: str) -> str:
     return _SCIENTIFIC_NOTATION_PATTERN.sub(_replace, text)
 
 
+def _to_numeric_series(series: pd.Series) -> pd.Series:
+    normalized = (
+        series.astype(str)
+        .str.replace(",", "", regex=False)
+        .str.replace("$", "", regex=False)
+        .str.replace(r"\(([^\)]+)\)", r"-\1", regex=True)
+        .str.strip()
+    )
+    return pd.to_numeric(normalized, errors="coerce")
+
+
+def _find_column_by_tokens(columns: list[str], token_groups: list[tuple[str, ...]]) -> str:
+    normalized = {col: _normalize_column_token(col) for col in columns}
+    for col, norm in normalized.items():
+        for group in token_groups:
+            if all(token in norm for token in group):
+                return col
+    return ""
+
+
+def _extract_month_year(question: str) -> tuple[int | None, int | None]:
+    match = _FINANCE_TOTAL_PATTERN.search(question or "")
+    if not match:
+        return None, None
+
+    year_text = match.group("year1") or match.group("year2")
+    month_text = match.group("month1") or match.group("month2")
+
+    year = int(year_text) if year_text else None
+    month = _MONTH_TO_NUMBER.get((month_text or "").strip().lower())
+    return year, month
+
+
+def _extract_account_name(question: str) -> str:
+    match = _FINANCE_TOTAL_PATTERN.search(question or "")
+    if not match:
+        return ""
+    account = (match.group("account") or "").strip(" .,:;\n\t")
+    return account
+
+
+def _deterministic_finance_total_answer(df: pd.DataFrame, question: str, wants_table: bool) -> str:
+    account_name = _extract_account_name(question)
+    year, month = _extract_month_year(question)
+    if not account_name or not year or not month:
+        return ""
+
+    working = df.copy()
+    columns = [str(col) for col in working.columns]
+    if not columns:
+        return ""
+
+    account_col = _find_column_by_tokens(
+        columns,
+        [
+            ("account",),
+            ("category",),
+            ("ledger",),
+            ("gl",),
+            ("description",),
+            ("coa",),
+        ],
+    )
+
+    year_col = _find_column_by_tokens(columns, [("year",), ("fiscal", "year")])
+    month_col = _find_column_by_tokens(columns, [("month",), ("period",)])
+    date_col = _find_column_by_tokens(columns, [("date",), ("posting", "date"), ("transaction", "date")])
+
+    amount_col = _find_column_by_tokens(
+        columns,
+        [
+            ("amount",),
+            ("spent",),
+            ("expense",),
+            ("cost",),
+            ("debit",),
+            ("value",),
+            ("total",),
+        ],
+    )
+
+    if not amount_col:
+        numeric_candidates = []
+        for col in columns:
+            numeric = _to_numeric_series(working[col])
+            if numeric.notna().sum() > 0:
+                numeric_candidates.append((col, numeric.notna().sum()))
+        if numeric_candidates:
+            numeric_candidates.sort(key=lambda item: item[1], reverse=True)
+            amount_col = numeric_candidates[0][0]
+
+    if not amount_col:
+        return ""
+
+    mask = pd.Series(True, index=working.index)
+
+    if account_col:
+        account_series = working[account_col].astype(str).str.strip().str.lower()
+        account_token = account_name.strip().lower()
+        mask &= account_series.str.contains(re.escape(account_token), na=False)
+    else:
+        account_token = account_name.strip().lower()
+        text_columns = [
+            col
+            for col in columns
+            if working[col].dtype == object or str(working[col].dtype).startswith("string")
+        ]
+        if text_columns:
+            account_mask = pd.Series(False, index=working.index)
+            for col in text_columns:
+                col_mask = working[col].astype(str).str.lower().str.contains(re.escape(account_token), na=False)
+                account_mask |= col_mask
+            mask &= account_mask
+
+    if year_col:
+        year_series = pd.to_numeric(working[year_col].astype(str).str.extract(r"(\d{4})", expand=False), errors="coerce")
+        mask &= year_series == year
+
+    if month_col:
+        month_raw = working[month_col].astype(str).str.strip().str.lower()
+        month_num = pd.to_numeric(month_raw, errors="coerce")
+        month_name_num = month_raw.map(_MONTH_TO_NUMBER)
+        month_effective = month_num.where(month_num.notna(), pd.to_numeric(month_name_num, errors="coerce"))
+        mask &= month_effective == month
+
+    if date_col and (not year_col or not month_col):
+        parsed_dates = pd.to_datetime(working[date_col], errors="coerce")
+        if not year_col:
+            mask &= parsed_dates.dt.year == year
+        if not month_col:
+            mask &= parsed_dates.dt.month == month
+
+    filtered = working[mask].copy()
+    if filtered.empty:
+        return "No matching data was found."
+
+    amount_values = _to_numeric_series(filtered[amount_col])
+    total = float(amount_values.fillna(0).abs().sum())
+
+    month_name = next((name.capitalize() for name, idx in _MONTH_TO_NUMBER.items() if idx == month and len(name) > 3), str(month))
+
+    table_df = pd.DataFrame(
+        [
+            {
+                "Account": account_name,
+                "Year": year,
+                "Month": month_name,
+                "Total Spent": round(total, 2),
+            }
+        ]
+    )
+
+    if wants_table:
+        return table_df.to_markdown(index=False)
+
+    return f"Total spent on {account_name} for {month_name} {year}: {total:,.2f}"
+
+
 def _extract_best_observation(steps: list[dict[str, Any]]) -> str:
     """Fallback: return the last non-empty tool observation when model output is empty."""
     for step in reversed(steps or []):
@@ -226,6 +415,23 @@ def _build_execution_forcing_question(df: pd.DataFrame, question: str, *, prefer
 
 
 def query_dataframe_with_langchain(df: pd.DataFrame, question: str) -> dict[str, Any]:
+    if df.empty:
+        raise HTTPException(status_code=400, detail="DataFrame has no rows to analyze.")
+
+    normalized_question = (question or "").strip()
+    if not normalized_question:
+        raise HTTPException(status_code=400, detail="Question cannot be empty.")
+
+    wants_table = _is_table_request(normalized_question)
+
+    deterministic_answer = _deterministic_finance_total_answer(df, normalized_question, wants_table=wants_table)
+    if deterministic_answer:
+        return {
+            "success": True,
+            "answer": deterministic_answer,
+            "intermediate_steps": [],
+        }
+
     if create_pandas_dataframe_agent is None:
         raise HTTPException(
             status_code=500,
@@ -234,13 +440,6 @@ def query_dataframe_with_langchain(df: pd.DataFrame, question: str) -> dict[str,
                 "Install langchain-experimental in the backend environment."
             ),
         )
-
-    if df.empty:
-        raise HTTPException(status_code=400, detail="DataFrame has no rows to analyze.")
-
-    normalized_question = (question or "").strip()
-    if not normalized_question:
-        raise HTTPException(status_code=400, detail="Question cannot be empty.")
 
     try:
         agent = create_pandas_dataframe_agent(
@@ -256,7 +455,6 @@ def query_dataframe_with_langchain(df: pd.DataFrame, question: str) -> dict[str,
     except Exception as error:
         raise HTTPException(status_code=500, detail=f"Failed to initialize DataFrame agent: {error}") from error
 
-    wants_table = _is_table_request(normalized_question)
     forced_question = _build_execution_forcing_question(df, normalized_question, prefer_table=wants_table)
 
     try:
