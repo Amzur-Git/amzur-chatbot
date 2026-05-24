@@ -1,0 +1,440 @@
+{
+  "name": "P13 Excel Query -> Email (Chatbot Trigger)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual_trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1020,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "p13-excel-query-email-run",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "webhook_trigger",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1020,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "keepOnlySet": false,
+        "values": {
+          "string": [
+            {
+              "name": "backend_base_url",
+              "value": "={{$json.backend_base_url || 'http://localhost:8001'}}"
+            },
+            {
+              "name": "service_email",
+              "value": "={{$json.service_email || 'james.bond@gmail.com'}}"
+            },
+            {
+              "name": "service_password",
+              "value": "={{$json.service_password || 'Martini@007'}}"
+            },
+            {
+              "name": "file_id",
+              "value": "={{$json.file_id || ''}}"
+            },
+            {
+              "name": "question",
+              "value": "={{$json.question || $json.prompt || 'Analyze the sheet and summarize key insights in bullet points.'}}"
+            },
+            {
+              "name": "chat_thread_id",
+              "value": "={{$json.chat_thread_id || ''}}"
+            },
+            {
+              "name": "recipient_email",
+              "value": "={{$json.recipient_email || $json.user_email || 'james.bond@gmail.com'}}"
+            },
+            {
+              "name": "email_subject",
+              "value": "={{$json.email_subject || 'Excel Analysis Result'}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "normalize_input",
+      "name": "Normalize Input",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        -780,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$node['Normalize Input'].json.file_id || ''}}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        }
+      },
+      "id": "if_file_id_present",
+      "name": "File ID Provided?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{$node['Normalize Input'].json.backend_base_url + '/api/auth/login'}}",
+        "method": "POST",
+        "jsonParameters": true,
+        "bodyParametersJson": "{\n  \"email\": \"{{$node['Normalize Input'].json.service_email}}\",\n  \"password\": \"{{$node['Normalize Input'].json.service_password}}\"\n}",
+        "options": {
+          "fullResponse": true
+        }
+      },
+      "id": "login_request",
+      "name": "Login",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        -340,
+        40
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{$json.statusCode || $json.status || 0}}",
+              "operation": "equal",
+              "value2": 200
+            }
+          ]
+        }
+      },
+      "id": "if_auth_ok",
+      "name": "Auth OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        -120,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const row = items[0].json;\nconst headers = row.headers || {};\nlet setCookie = headers['set-cookie'] || headers['Set-Cookie'];\nif (Array.isArray(setCookie)) setCookie = setCookie[0];\nif (!setCookie) throw new Error('Login succeeded but no set-cookie header found.');\nconst authCookie = String(setCookie).split(';')[0];\nreturn [{ json: { auth_cookie: authCookie } }];"
+      },
+      "id": "extract_cookie",
+      "name": "Extract Cookie",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        100,
+        -20
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{$node['Normalize Input'].json.backend_base_url + '/api/sheets/query-file'}}",
+        "method": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={\n  \"Cookie\": $node['Extract Cookie'].json.auth_cookie,\n  \"Content-Type\": \"application/json\"\n}",
+        "bodyParametersJson": "={\n  \"file_id\": $node['Normalize Input'].json.file_id,\n  \"question\": $node['Normalize Input'].json.question,\n  \"chat_thread_id\": $node['Normalize Input'].json.chat_thread_id || null\n}",
+        "options": {}
+      },
+      "id": "query_uploaded_file",
+      "name": "Query Uploaded File",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        320,
+        -20
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.success === true}}",
+              "operation": "isTrue"
+            }
+          ]
+        }
+      },
+      "id": "if_query_ok",
+      "name": "Query OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        540,
+        -20
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "const n = $node['Normalize Input'].json;\nconst q = $json;\nconst df = q.dataframe_info || {};\nconst rows = df.rows ?? 'unknown';\nconst cols = df.columns ?? 'unknown';\nconst colNames = Array.isArray(df.column_names) ? df.column_names.join(', ') : '';\nconst body = [\n  `Question: ${n.question}`,\n  '',\n  'Analysis:',\n  q.answer || '(No answer returned)',\n  '',\n  `DataFrame shape: ${rows} rows x ${cols} columns`,\n  colNames ? `Columns: ${colNames}` : '',\n  q.thread_id ? `Chat Thread ID: ${q.thread_id}` : ''\n].filter(Boolean).join('\\n');\n\nreturn [{\n  json: {\n    to_email: n.recipient_email,\n    subject: n.email_subject,\n    text_body: body,\n    answer: q.answer || '',\n    thread_id: q.thread_id || null,\n    rows,\n    cols\n  }\n}];"
+      },
+      "id": "build_email_content",
+      "name": "Build Email Content",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        760,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{$json.from_email || 'noreply@example.com'}}",
+        "toEmail": "={{$json.to_email}}",
+        "subject": "={{$json.subject}}",
+        "text": "={{$json.text_body}}",
+        "options": {}
+      },
+      "id": "send_email",
+      "name": "Send Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [
+        980,
+        -100
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "const e = $json;\nreturn [{\n  json: {\n    status: 'ok',\n    emailed_to: e.to_email || null,\n    subject: e.subject || null,\n    thread_id: e.thread_id || null,\n    preview: (e.answer || '').slice(0, 500)\n  }\n}];"
+      },
+      "id": "success_payload",
+      "name": "Success Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "const err = $json;\nreturn [{\n  json: {\n    status: 'failed_query',\n    detail: err.detail || err.message || err.error || 'Sheet query failed'\n  }\n}];"
+      },
+      "id": "query_failed",
+      "name": "Query Failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        760,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "const err = $json;\nreturn [{\n  json: {\n    status: 'failed_auth',\n    detail: err.message || err.error || 'Authentication failed'\n  }\n}];"
+      },
+      "id": "auth_failed",
+      "name": "Auth Failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        100,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "return [{\n  json: {\n    status: 'failed_validation',\n    detail: 'file_id is required. Send the uploaded table attachment id from chatbot.'\n  }\n}];"
+      },
+      "id": "missing_file_id",
+      "name": "Missing file_id",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -340,
+        220
+      ]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Input": {
+      "main": [
+        [
+          {
+            "node": "File ID Provided?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "File ID Provided?": {
+      "main": [
+        [
+          {
+            "node": "Login",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Missing file_id",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Login": {
+      "main": [
+        [
+          {
+            "node": "Auth OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Auth OK?": {
+      "main": [
+        [
+          {
+            "node": "Extract Cookie",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Auth Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Cookie": {
+      "main": [
+        [
+          {
+            "node": "Query Uploaded File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Uploaded File": {
+      "main": [
+        [
+          {
+            "node": "Query OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query OK?": {
+      "main": [
+        [
+          {
+            "node": "Build Email Content",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Query Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Email Content": {
+      "main": [
+        [
+          {
+            "node": "Send Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Email": {
+      "main": [
+        [
+          {
+            "node": "Success Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "versionId": "p13-excel-query-email-v1"
+}

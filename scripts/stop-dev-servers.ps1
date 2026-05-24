@@ -3,7 +3,7 @@ param(
     [string]$Action = 'stop',
     [int]$FrontendPort = 5173,
     [int]$BackendPort = 8001,
-    [string]$BindHost = '0.0.0.0',
+    [string]$BindHost = 'localhost',
     [int[]]$ExtraPorts = @()
 )
 
@@ -67,24 +67,43 @@ function Start-DevServers {
     if (Test-Path $backendLog) { Remove-Item $backendLog -Force -ErrorAction SilentlyContinue }
     if (Test-Path $backendErrLog) { Remove-Item $backendErrLog -Force -ErrorAction SilentlyContinue }
 
-    $backendArgs = "-m uvicorn app.main:app --host $BindHost --port $BackendPort"
-    $backendProc = Start-Process -FilePath $pythonExe -ArgumentList $backendArgs -WorkingDirectory $backendDir -PassThru -WindowStyle Hidden -RedirectStandardOutput $backendLog -RedirectStandardError $backendErrLog
-    Write-Host "Started backend (PID $($backendProc.Id)) on port $BackendPort"
+    # Launch backend via a PowerShell host process. In some Windows setups,
+    # starting python.exe directly with hidden + redirected stdio can hang before bind.
+    $backendCmd = "& '$pythonExe' -m uvicorn app.main:app --host $BindHost --port $BackendPort 1> '$backendLog' 2> '$backendErrLog'"
+    $backendProc = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $backendCmd) -WorkingDirectory $backendDir -PassThru -WindowStyle Hidden
+    Write-Host "Started backend launcher (PID $($backendProc.Id)) on port $BackendPort"
 
     $frontendCmd = "$env:VITE_API_BASE_URL='http://localhost:$BackendPort'; npm run dev -- --host $BindHost --port $FrontendPort"
     $frontendProc = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $frontendCmd) -WorkingDirectory $frontendDir -PassThru -WindowStyle Hidden
     Write-Host "Started frontend launcher (PID $($frontendProc.Id)) on port $FrontendPort"
 
-    Start-Sleep -Seconds 3
+    $backendListening = $null
+    $frontendListening = $null
 
-    $backendListening = Get-NetTCPConnection -LocalPort $BackendPort -State Listen -ErrorAction SilentlyContinue
-    $frontendListening = Get-NetTCPConnection -LocalPort $FrontendPort -State Listen -ErrorAction SilentlyContinue
+    # Wait up to ~30s for services to bind.
+    for ($attempt = 1; $attempt -le 30; $attempt++) {
+        if (-not $backendListening) {
+            $backendListening = Get-NetTCPConnection -LocalPort $BackendPort -State Listen -ErrorAction SilentlyContinue
+        }
+        if (-not $frontendListening) {
+            $frontendListening = Get-NetTCPConnection -LocalPort $FrontendPort -State Listen -ErrorAction SilentlyContinue
+        }
+
+        if ($backendListening -and $frontendListening) {
+            break
+        }
+
+        Start-Sleep -Seconds 1
+    }
 
     if ($backendListening) {
         Write-Host "Backend is listening on port $BackendPort"
     }
     else {
         Write-Host "Backend is not listening on port $BackendPort. Check $backendErrLog"
+        if (Test-Path $backendErrLog) {
+            Get-Content $backendErrLog -Tail 20 | ForEach-Object { Write-Host "[backend stderr] $_" }
+        }
     }
 
     if ($frontendListening) {

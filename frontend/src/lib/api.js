@@ -289,3 +289,15 @@ export const sheetsApi = {
     return response.data;
   },
 };
+
+export const workflowsApi = {
+  triggerSheetsEmailRun: async ({ fileId, question, chatThreadId = null, recipientEmail = null }) => {
+    const response = await apiClient.post("/api/workflows/sheets-email-run", {
+      file_id: fileId,
+      question,
+      chat_thread_id: chatThreadId,
+      recipient_email: recipientEmail,
+    });
+    return response.data;
+  },
+};

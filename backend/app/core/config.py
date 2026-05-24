@@ -38,6 +38,14 @@ class Settings(BaseSettings):
     IMAGE_RETENTION_DAYS: int = 30
     IMAGE_GEN_MAX_PROMPT_CHARS: int = 1000
     IMAGE_GEN_MAX_CONCURRENT_REQUESTS: int = 2
+
+    # Workflow integrations (optional)
+    WORKFLOW_SLACK_WEBHOOK_URL: Optional[str] = None
+    N8N_EXCEL_QUERY_EMAIL_WEBHOOK_URL: Optional[str] = None
+    N8N_EXCEL_QUERY_EMAIL_BACKEND_BASE_URL: Optional[str] = None
+    N8N_EXCEL_QUERY_EMAIL_TIMEOUT_SECONDS: int = 20
+    N8N_EXCEL_QUERY_EMAIL_SERVICE_EMAIL: Optional[str] = None
+    N8N_EXCEL_QUERY_EMAIL_SERVICE_PASSWORD: Optional[str] = None
     
     # LiteLLM User Tracking (ADD THESE THREE LINES)
     LITELLM_USER_ID: str

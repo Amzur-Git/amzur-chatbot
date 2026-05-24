@@ -1,0 +1,418 @@
+{
+  "name": "AI Excel Analysis Email Workflow",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "f862f038-f1e6-424d-8c3c-bb311d4d21cb",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        784,
+        64
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "excel-analysis-email",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "a62512db-17b7-495a-916a-6d9b07c7b66f",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        784,
+        256
+      ],
+      "webhookId": "excel-analysis-email"
+    },
+    {
+      "parameters": {
+        "jsCode": "const inJson = $json || {};\nconst body = (inJson.body && typeof inJson.body === 'object') ? inJson.body : {};\n\nconst pick = (a, b, fallback = '') => {\n  if (a !== undefined && a !== null && String(a).trim() !== '') return String(a).trim();\n  if (b !== undefined && b !== null && String(b).trim() !== '') return String(b).trim();\n  return fallback;\n};\n\nreturn [{\n  json: {\n    backend_base_url: pick(inJson.backend_base_url, body.backend_base_url, 'http://127.0.0.1:8001'),\n    service_email: pick(inJson.service_email, body.service_email, 'james.bond@gmail.com'),\n    service_password: pick(inJson.service_password, body.service_password, 'Martini@007'),\n    file_id: pick(inJson.file_id, body.file_id, 'a085bc3e-34b4-468f-91b9-db2a28abe09c'),\n    question: pick(inJson.question, body.question, 'Provide a concise analysis of this dataset and key insights.'),\n    recipient_email: pick(inJson.recipient_email, body.recipient_email, 'sankalp.bajpai@amzur.com'),\n    email_subject: pick(inJson.email_subject, body.email_subject, 'AI Excel Analysis Results'),\n    chat_thread_id: pick(inJson.chat_thread_id, body.chat_thread_id, 'a272598e-b233-47c5-ab46-449ef892b6e4')\n  }\n}];"
+      },
+      "id": "8763cf2f-77e2-41bf-af07-21f8ec200c09",
+      "name": "Normalize Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1072,
+        176
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{!!$node[\"Normalize Input\"].json.file_id && $node[\"Normalize Input\"].json.file_id.trim() !== \"\"}}",
+              "operation": "true"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "997dc290-048a-4fa2-b1be-9da2011094fe",
+      "name": "Validate File ID",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1312,
+        176
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "6a5cf87b-bd23-415a-b900-e42350e6cce5",
+      "name": "Missing File ID Response",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1552,
+        368
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$node[\"Normalize Input\"].json.backend_base_url + '/api/auth/login'}}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  \"email\": $node[\"Normalize Input\"].json.service_email,\n  \"password\": $node[\"Normalize Input\"].json.service_password\n} }}",
+        "options": {
+          "fullResponse": true
+        }
+      },
+      "id": "67a9b262-5481-45ce-80ee-5d31869438e1",
+      "name": "Login",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1552,
+        176
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{($json.statusCode || $json.status || 0) === 200}}",
+              "operation": "true"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "33505427-4e65-451a-bcf1-580619c3dc05",
+      "name": "Auth Validation",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1792,
+        176
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "ee070bc5-bac8-4f50-9a83-2470a2c67f4d",
+      "name": "Auth Failure Response",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2032,
+        368
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const row = $json;\nconst headers = row.headers || {};\nlet setCookie = headers['set-cookie'] || headers['Set-Cookie'];\nif (Array.isArray(setCookie)) setCookie = setCookie[0];\n\nconst authCookie = setCookie ? String(setCookie).split(';')[0] : '';\nconst accessToken = row.access_token || row.body?.access_token || '';\nconst authBearer = accessToken ? `Bearer ${accessToken}` : '';\n\nif (!authCookie && !authBearer) {\n  throw new Error('Login succeeded but no set-cookie or access_token found.');\n}\n\nreturn [{ json: { auth_cookie: authCookie, auth_bearer: authBearer } }];"
+      },
+      "id": "60503315-1b75-431e-b695-964437962814",
+      "name": "Extract Cookie",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2032,
+        176
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$node[\"Normalize Input\"].json.backend_base_url + '/api/sheets/query-file'}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Cookie",
+              "value": "={{$node[\"Extract Cookie\"].json.auth_cookie}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "={{$node[\"Extract Cookie\"].json.auth_bearer}}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  \"file_id\": $node[\"Normalize Input\"].json.file_id,\n  \"question\": $node[\"Normalize Input\"].json.question,\n  \"chat_thread_id\": $node[\"Normalize Input\"].json.chat_thread_id\n} }}",
+        "options": {}
+      },
+      "id": "ab76dba6-2373-4cb9-9ce4-ce4a34bd3e36",
+      "name": "Query Uploaded File",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2272,
+        176
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.body?.success === true || $json.success === true}}",
+              "operation": "true"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "2d557776-438c-4db8-a8be-3669c3d25078",
+      "name": "Query Validation",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2512,
+        176
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "74d35b22-a6d0-44da-b5d6-c5b03b52a807",
+      "name": "Query Failure Response",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2752,
+        368
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const question = $node[\"Normalize Input\"].json.question;\nconst inputThreadId = $node[\"Normalize Input\"].json.chat_thread_id || '';\nconst payload = $json.body ?? $json;\n\nconst responseThreadId = payload.chat_thread_id\n  ?? payload.thread_id\n  ?? payload.result?.chat_thread_id\n  ?? payload.result?.thread_id\n  ?? '';\n\nconst threadId = inputThreadId || responseThreadId || '';\n\nconst analysis = payload.answer\n  ?? payload.analysis\n  ?? payload.response\n  ?? payload.result?.answer\n  ?? payload.result?.analysis\n  ?? JSON.stringify(payload.result ?? payload, null, 2);\n\nconst shape = payload.dataframe_shape\n  ?? payload.result?.dataframe_shape\n  ?? payload.shape\n  ?? 'N/A';\n\nlet columns = payload.columns\n  ?? payload.result?.columns\n  ?? payload.result?.column_names\n  ?? [];\n\nif (!Array.isArray(columns)) {\n  if (typeof columns === 'string') {\n    columns = columns.split(',').map(c => c.trim()).filter(Boolean);\n  } else {\n    columns = [];\n  }\n}\n\nconst columnsText = columns.length ? columns.join(', ') : 'N/A';\n\nconst html = `\n<h2>AI Excel Analysis Results</h2>\n<p><strong>Question:</strong> ${question}</p>\n<p><strong>AI Analysis:</strong></p>\n<pre style=\"white-space: pre-wrap; font-family: Arial, sans-serif;\">${String(analysis)}</pre>\n<hr />\n<p><strong>DataFrame Shape:</strong> ${String(shape)}</p>\n<p><strong>Columns:</strong> ${columnsText}</p>\n<p><strong>Thread ID:</strong> ${threadId || 'N/A'}</p>\n`;\n\nconst textBody = [\n  `Question: ${question}`,\n  '',\n  'AI Analysis:',\n  String(analysis),\n  '',\n  `DataFrame Shape: ${String(shape)}`,\n  `Columns: ${columnsText}`,\n  `Thread ID: ${threadId || 'N/A'}`\n].join('\\n');\n\nreturn [{\n  json: {\n    question,\n    analysis_text: String(analysis),\n    dataframe_shape: String(shape),\n    columns,\n    thread_id: threadId,\n    email_html: html,\n    text_body: textBody\n  }\n}];"
+      },
+      "id": "adf1071f-0977-4e70-9171-44d4803ae2db",
+      "name": "Build Email Content",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2752,
+        176
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{$node[\"Normalize Input\"].json.service_email}}",
+        "toEmail": "={{$node[\"Normalize Input\"].json.recipient_email}}",
+        "subject": "={{$node[\"Normalize Input\"].json.email_subject}}",
+        "text": "={{$json.text_body}}",
+        "options": {}
+      },
+      "id": "7c87990c-03d4-4bc2-b539-a5eb8637de48",
+      "name": "Send Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [
+        2992,
+        176
+      ],
+      "webhookId": "172a24a7-085e-4606-bba7-3c8613b8fb9b"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "92867b64-b2c9-4149-8d36-e46a6f7d8cc0",
+      "name": "Success Payload",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        3232,
+        176
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Input": {
+      "main": [
+        [
+          {
+            "node": "Validate File ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate File ID": {
+      "main": [
+        [
+          {
+            "node": "Login",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Missing File ID Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Login": {
+      "main": [
+        [
+          {
+            "node": "Auth Validation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Auth Validation": {
+      "main": [
+        [
+          {
+            "node": "Extract Cookie",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Auth Failure Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Cookie": {
+      "main": [
+        [
+          {
+            "node": "Query Uploaded File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Uploaded File": {
+      "main": [
+        [
+          {
+            "node": "Query Validation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Validation": {
+      "main": [
+        [
+          {
+            "node": "Build Email Content",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Query Failure Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Email Content": {
+      "main": [
+        [
+          {
+            "node": "Send Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Email": {
+      "main": [
+        [
+          {
+            "node": "Success Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "12e1060d-c1a7-491a-87e4-8b29fc9c4e75",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "d422f1e1bc4c2e8970251dc0562f8c3101286d191ca055108c257d66ae72c389"
+  },
+  "id": "M5kiv0x1DUNv5qNT",
+  "tags": []
+}

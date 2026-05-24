@@ -1,0 +1,485 @@
+{
+  "name": "AI Excel Analysis Email Workflow (Auto Latest Context)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "11111111-1111-4111-8111-111111111111",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        720,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "excel-analysis-email-auto-latest",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "22222222-2222-4222-8222-222222222222",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        720,
+        260
+      ],
+      "webhookId": "excel-analysis-email-auto-latest"
+    },
+    {
+      "parameters": {
+        "jsCode": "const inJson = $json || {};\nconst body = (inJson.body && typeof inJson.body === 'object') ? inJson.body : {};\n\nconst pick = (a, b, fallback = '') => {\n  if (a !== undefined && a !== null && String(a).trim() !== '') return String(a).trim();\n  if (b !== undefined && b !== null && String(b).trim() !== '') return String(b).trim();\n  return fallback;\n};\n\nreturn [{\n  json: {\n    backend_base_url: pick(inJson.backend_base_url, body.backend_base_url, 'http://127.0.0.1:8001'),\n    service_email: pick(inJson.service_email, body.service_email, 'james.bond@gmail.com'),\n    service_password: pick(inJson.service_password, body.service_password, 'Martini@007'),\n    recipient_email: pick(inJson.recipient_email, body.recipient_email, 'sankalp.bajpai@amzur.com'),\n    email_subject: pick(inJson.email_subject, body.email_subject, 'AI Excel Analysis Results'),\n\n    // Optional overrides. If omitted, workflow auto-detects latest values from backend APIs.\n    chat_thread_id: pick(inJson.chat_thread_id, body.chat_thread_id, ''),\n    file_id: pick(inJson.file_id, body.file_id, ''),\n    question: pick(inJson.question, body.question, '')\n  }\n}];"
+      },
+      "id": "33333333-3333-4333-8333-333333333333",
+      "name": "Normalize Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        170
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$node[\"Normalize Input\"].json.backend_base_url + '/api/auth/login'}}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  \"email\": $node[\"Normalize Input\"].json.service_email,\n  \"password\": $node[\"Normalize Input\"].json.service_password\n} }}",
+        "options": {
+          "fullResponse": true
+        }
+      },
+      "id": "44444444-4444-4444-8444-444444444444",
+      "name": "Login",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        170
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{($json.statusCode || $json.status || 0) === 200}}",
+              "operation": "true"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "55555555-5555-4555-8555-555555555555",
+      "name": "Auth Validation",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        170
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "66666666-6666-4666-8666-666666666666",
+      "name": "Auth Failure Response",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1680,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const row = $json;\nconst headers = row.headers || {};\nlet setCookie = headers['set-cookie'] || headers['Set-Cookie'];\nif (Array.isArray(setCookie)) setCookie = setCookie[0];\n\nconst authCookie = setCookie ? String(setCookie).split(';')[0] : '';\nconst accessToken = row.access_token || row.body?.access_token || '';\nconst authBearer = accessToken ? `Bearer ${accessToken}` : '';\n\nif (!authCookie && !authBearer) {\n  throw new Error('Login succeeded but no set-cookie or access_token found.');\n}\n\nreturn [{ json: { auth_cookie: authCookie, auth_bearer: authBearer } }];"
+      },
+      "id": "77777777-7777-4777-8777-777777777777",
+      "name": "Extract Cookie",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        170
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{$node[\"Normalize Input\"].json.backend_base_url + '/api/chat/threads'}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Cookie",
+              "value": "={{$node[\"Extract Cookie\"].json.auth_cookie}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "={{$node[\"Extract Cookie\"].json.auth_bearer}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "88888888-8888-4888-8888-888888888888",
+      "name": "Fetch Threads",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1920,
+        170
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = $json.body ?? $json;\nconst threads = Array.isArray(payload) ? payload : [];\nconst manualThread = $node['Normalize Input'].json.chat_thread_id || '';\n\nlet chatThreadId = manualThread;\nlet threadTitle = '';\n\nif (!chatThreadId) {\n  if (!threads.length) {\n    throw new Error('No chat threads found for this user.');\n  }\n  chatThreadId = String(threads[0].id || '').trim();\n  threadTitle = String(threads[0].title || '').trim();\n}\n\nif (!chatThreadId) {\n  throw new Error('Unable to resolve chat_thread_id.');\n}\n\nreturn [{ json: { chat_thread_id: chatThreadId, thread_title: threadTitle } }];"
+      },
+      "id": "99999999-9999-4999-8999-999999999999",
+      "name": "Resolve Latest Thread",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2160,
+        170
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{$node[\"Normalize Input\"].json.backend_base_url + '/api/chat/threads/' + $node[\"Resolve Latest Thread\"].json.chat_thread_id + '/messages'}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Cookie",
+              "value": "={{$node[\"Extract Cookie\"].json.auth_cookie}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "={{$node[\"Extract Cookie\"].json.auth_bearer}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "name": "Fetch Thread Messages",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2400,
+        170
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = $json.body ?? $json;\nconst messages = Array.isArray(payload) ? payload : [];\n\nconst manualQuestion = ($node['Normalize Input'].json.question || '').trim();\nconst manualFileId = ($node['Normalize Input'].json.file_id || '').trim();\nconst threadId = $node['Resolve Latest Thread'].json.chat_thread_id;\n\nlet latestUserMessage = null;\nfor (let i = messages.length - 1; i >= 0; i -= 1) {\n  const m = messages[i];\n  if ((m.role || '').toLowerCase() === 'user' && String(m.content || '').trim() !== '') {\n    latestUserMessage = m;\n    break;\n  }\n}\n\nlet latestTableAttachment = null;\nfor (let i = messages.length - 1; i >= 0; i -= 1) {\n  const msg = messages[i] || {};\n  const attachments = Array.isArray(msg.attachments) ? msg.attachments : [];\n  for (let j = attachments.length - 1; j >= 0; j -= 1) {\n    const a = attachments[j] || {};\n    if ((a.file_type || '').toLowerCase() === 'table' && String(a.id || '').trim() !== '') {\n      latestTableAttachment = a;\n      break;\n    }\n  }\n  if (latestTableAttachment) break;\n}\n\nconst question = manualQuestion || String(latestUserMessage?.content || '').trim();\nconst fileId = manualFileId || String(latestTableAttachment?.id || '').trim();\n\nif (!question) {\n  throw new Error('Unable to resolve latest user question. Pass question explicitly or ensure thread has user messages.');\n}\n\nif (!fileId) {\n  throw new Error('Unable to resolve latest table file_id. Pass file_id explicitly or ensure thread has a table attachment.');\n}\n\nreturn [{\n  json: {\n    chat_thread_id: threadId,\n    question,\n    file_id: fileId,\n    source_user_message_id: latestUserMessage?.id || '',\n    source_attachment_name: latestTableAttachment?.file_name || ''\n  }\n}];"
+      },
+      "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "name": "Resolve Latest Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2640,
+        170
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$node[\"Normalize Input\"].json.backend_base_url + '/api/sheets/query-file'}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Cookie",
+              "value": "={{$node[\"Extract Cookie\"].json.auth_cookie}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "={{$node[\"Extract Cookie\"].json.auth_bearer}}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  \"file_id\": $node[\"Resolve Latest Context\"].json.file_id,\n  \"question\": $node[\"Resolve Latest Context\"].json.question,\n  \"chat_thread_id\": $node[\"Resolve Latest Context\"].json.chat_thread_id\n} }}",
+        "options": {}
+      },
+      "id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      "name": "Query Uploaded File",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2880,
+        170
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.body?.success === true || $json.success === true}}",
+              "operation": "true"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      "name": "Query Validation",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3120,
+        170
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+      "name": "Query Failure Response",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        3360,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = $json.body ?? $json;\nconst resolved = $node['Resolve Latest Context'].json;\n\nconst question = resolved.question;\nconst threadId = resolved.chat_thread_id || '';\n\nconst analysis = payload.answer\n  ?? payload.analysis\n  ?? payload.response\n  ?? payload.result?.answer\n  ?? payload.result?.analysis\n  ?? JSON.stringify(payload.result ?? payload, null, 2);\n\nconst shape = payload.dataframe_shape\n  ?? payload.result?.dataframe_shape\n  ?? payload.shape\n  ?? 'N/A';\n\nlet columns = payload.columns\n  ?? payload.result?.columns\n  ?? payload.result?.column_names\n  ?? [];\n\nif (!Array.isArray(columns)) {\n  if (typeof columns === 'string') {\n    columns = columns.split(',').map(c => c.trim()).filter(Boolean);\n  } else {\n    columns = [];\n  }\n}\n\nconst columnsText = columns.length ? columns.join(', ') : 'N/A';\n\nconst textBody = [\n  `Question: ${question}`,\n  '',\n  'AI Analysis:',\n  String(analysis),\n  '',\n  `DataFrame Shape: ${String(shape)}`,\n  `Columns: ${columnsText}`,\n  `Thread ID: ${threadId || 'N/A'}`,\n  `File ID: ${resolved.file_id || 'N/A'}`,\n  resolved.source_attachment_name ? `Source File: ${resolved.source_attachment_name}` : ''\n].filter(Boolean).join('\\n');\n\nreturn [{\n  json: {\n    text_body: textBody,\n    thread_id: threadId,\n    question,\n    file_id: resolved.file_id\n  }\n}];"
+      },
+      "id": "ffffffff-ffff-4fff-8fff-ffffffffffff",
+      "name": "Build Email Content",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3360,
+        170
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{$node[\"Normalize Input\"].json.service_email}}",
+        "toEmail": "={{$node[\"Normalize Input\"].json.recipient_email}}",
+        "subject": "={{$node[\"Normalize Input\"].json.email_subject}}",
+        "text": "={{$json.text_body}}",
+        "options": {}
+      },
+      "id": "12121212-1212-4212-8212-121212121212",
+      "name": "Send Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [
+        3600,
+        170
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "13131313-1313-4313-8313-131313131313",
+      "name": "Success Payload",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        3840,
+        170
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Input": {
+      "main": [
+        [
+          {
+            "node": "Login",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Login": {
+      "main": [
+        [
+          {
+            "node": "Auth Validation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Auth Validation": {
+      "main": [
+        [
+          {
+            "node": "Extract Cookie",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Auth Failure Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Cookie": {
+      "main": [
+        [
+          {
+            "node": "Fetch Threads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Threads": {
+      "main": [
+        [
+          {
+            "node": "Resolve Latest Thread",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Latest Thread": {
+      "main": [
+        [
+          {
+            "node": "Fetch Thread Messages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Thread Messages": {
+      "main": [
+        [
+          {
+            "node": "Resolve Latest Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Latest Context": {
+      "main": [
+        [
+          {
+            "node": "Query Uploaded File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Uploaded File": {
+      "main": [
+        [
+          {
+            "node": "Query Validation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Validation": {
+      "main": [
+        [
+          {
+            "node": "Build Email Content",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Query Failure Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Email Content": {
+      "main": [
+        [
+          {
+            "node": "Send Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Email": {
+      "main": [
+        [
+          {
+            "node": "Success Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": []
+}

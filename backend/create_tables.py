@@ -5,6 +5,7 @@ from app.models.user import Base
 from app.models.thread import Thread
 from app.models.message import Message
 from app.models.attachment import Attachment
+from app.models.workflow_run import WorkflowRun
 
 async def create_tables():
     async with engine.begin() as conn:

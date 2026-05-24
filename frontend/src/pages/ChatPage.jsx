@@ -5,7 +5,7 @@ import axios from "axios";
 import { ChevronDown } from "lucide-react";
 import MessageBubble from "../components/chat/MessageBubble";
 import ChatComposer from "../components/chat/ChatComposer";
-import { attachmentsApi, authApi, chatApi, extractApiError, sheetsApi } from "../lib/api";
+import { attachmentsApi, authApi, chatApi, extractApiError, sheetsApi, workflowsApi } from "../lib/api";
 import { useAuthStore } from "../hooks/useAuthStore";
 import { useChatStore } from "../hooks/useChatStore";
 
@@ -1128,6 +1128,21 @@ export default function ChatPage() {
         setError("");
         queryClient.invalidateQueries({ queryKey: ["chat-threads", user?.email] });
         queryClient.invalidateQueries({ queryKey: ["thread-messages", persistedThreadId] });
+
+        // Optional side-effect: trigger n8n email workflow through backend relay.
+        // Failures are intentionally non-blocking so core sheets Q&A stays unaffected.
+        if (hasSheetsFileSource && sheetsFileAttachment?.id) {
+          workflowsApi
+            .triggerSheetsEmailRun({
+              fileId: sheetsFileAttachment.id,
+              question,
+              chatThreadId: persistedThreadId,
+              recipientEmail: user?.email || null,
+            })
+            .catch((workflowError) => {
+              console.warn("Sheets email workflow trigger failed", workflowError);
+            });
+        }
       } catch (sheetsError) {
         setError(
           extractApiError(

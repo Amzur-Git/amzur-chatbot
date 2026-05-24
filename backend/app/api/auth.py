@@ -12,7 +12,7 @@ from app.core.config import settings
 from app.core.deps import get_current_user
 from app.db.session import get_db
 from app.models.user import User
-from app.schemas.user import UserCreate, UserLogin, UserResponse
+from app.schemas.user import LoginResponse, UserCreate, UserLogin, UserResponse
 from app.services.auth_service import AuthService
 from app.services.sheets_oauth_service import get_google_oauth_runtime_identity
 
@@ -186,7 +186,7 @@ async def register(user_data: UserCreate, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/login", response_model=UserResponse)
+@router.post("/login", response_model=LoginResponse)
 async def login(
     credentials: UserLogin,
     response: Response,
@@ -198,7 +198,10 @@ async def login(
 
     token = AuthService.create_token(user)
     _set_auth_cookie(response, token)
-    return user
+    user_payload = UserResponse.model_validate(user).model_dump()
+    user_payload["access_token"] = token
+    user_payload["token_type"] = "bearer"
+    return user_payload
 
 
 @router.get("/me", response_model=UserResponse)

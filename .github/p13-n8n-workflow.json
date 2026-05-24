@@ -1,0 +1,619 @@
+{
+  "name": "P13 Research Digest + Image (API Orchestrator)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual_trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -980,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "p13-research-image-run",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "webhook_trigger",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -980,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "keepOnlySet": false,
+        "values": {
+          "string": [
+            {
+              "name": "backend_base_url",
+              "value": "={{$json.backend_base_url || 'http://localhost:8001'}}"
+            },
+            {
+              "name": "service_email",
+              "value": "={{$json.service_email || 'james.bond@gmail.com'}}"
+            },
+            {
+              "name": "service_password",
+              "value": "={{$json.service_password || 'Martini@007'}}"
+            },
+            {
+              "name": "user_request",
+              "value": "={{$json.user_request || 'Research AI alignment, summarize in chat, generate image of concept'}}"
+            },
+            {
+              "name": "chat_thread_id",
+              "value": "={{$json.chat_thread_id || 'AUTO_CREATE'}}"
+            },
+            {
+              "name": "topic",
+              "value": "={{$json.topic || $json.user_request || 'AI alignment'}}"
+            },
+            {
+              "name": "aspect_ratio",
+              "value": "={{$json.aspect_ratio || '1:1'}}"
+            },
+            {
+              "name": "image_prompt",
+              "value": "={{$json.image_prompt || ('Create a clean, editorial-style visual representation of ' + ($json.topic || $json.user_request || 'the research topic'))}}"
+            }
+          ],
+          "number": [
+            {
+              "name": "max_rounds",
+              "value": "={{$json.max_rounds || 3}}"
+            },
+            {
+              "name": "papers_per_round",
+              "value": "={{$json.papers_per_round || 5}}"
+            },
+            {
+              "name": "min_papers",
+              "value": "={{$json.min_papers || 6}}"
+            },
+            {
+              "name": "num_images",
+              "value": "={{$json.num_images || 1}}"
+            }
+          ],
+          "boolean": [
+            {
+              "name": "send_slack_dm",
+              "value": "={{$json.send_slack_dm || false}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "normalize_input",
+      "name": "Normalize Input",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        -760,
+        130
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{$node['Normalize Input'].json.backend_base_url + '/api/auth/login'}}",
+        "method": "POST",
+        "jsonParameters": true,
+        "bodyParametersJson": "={\n  \"email\": $node['Normalize Input'].json.service_email,\n  \"password\": $node['Normalize Input'].json.service_password\n}",
+        "options": {
+          "fullResponse": true
+        }
+      },
+      "id": "login_request",
+      "name": "Login",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        -540,
+        130
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{$json.statusCode || $json.status || 0}}",
+              "operation": "equal",
+              "value2": 200
+            }
+          ]
+        }
+      },
+      "id": "if_auth_ok",
+      "name": "Auth OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        -320,
+        130
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const row = items[0].json;\nconst headers = row.headers || {};\nlet setCookie = headers['set-cookie'] || headers['Set-Cookie'];\nif (Array.isArray(setCookie)) setCookie = setCookie[0];\nif (!setCookie) throw new Error('Login succeeded but no set-cookie header found.');\nconst authCookie = String(setCookie).split(';')[0];\nreturn [{ json: { auth_cookie: authCookie } }];"
+      },
+      "id": "extract_cookie",
+      "name": "Extract Cookie",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -100,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$node['Normalize Input'].json.chat_thread_id || ''}}",
+              "operation": "isNotEmpty"
+            },
+            {
+              "value1": "={{$node['Normalize Input'].json.chat_thread_id || ''}}",
+              "operation": "notEqual",
+              "value2": "AUTO_CREATE"
+            }
+          ]
+        }
+      },
+      "id": "if_thread_id_provided",
+      "name": "Thread ID Provided?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        120,
+        170
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{$node['Normalize Input'].json.backend_base_url + '/api/chat/threads'}}",
+        "method": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={\n  \"Cookie\": $node['Extract Cookie'].json.auth_cookie,\n  \"Content-Type\": \"application/json\"\n}",
+        "bodyParametersJson": "={\n  \"title\": `Research Digest - ${$node['Normalize Input'].json.topic || 'Auto Thread'}`\n}",
+        "options": {}
+      },
+      "id": "create_thread",
+      "name": "Create Thread",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        340,
+        250
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "const providedRaw = $node['Normalize Input'].json.chat_thread_id || '';\nconst provided = providedRaw === 'AUTO_CREATE' ? '' : providedRaw;\nconst created = $json.id || '';\nconst resolved = created || provided;\nif (!resolved) {\n  throw new Error('No chat_thread_id available and thread creation did not return an id.');\n}\nreturn [{ json: { auth_cookie: $node['Extract Cookie'].json.auth_cookie, resolved_thread_id: resolved } }];"
+      },
+      "id": "resolve_thread_context",
+      "name": "Resolve Thread Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        170
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{$node['Normalize Input'].json.backend_base_url + '/api/workflows/research-image-run'}}",
+        "method": "POST",
+        "jsonParameters": true,
+        "headerParametersJson": "={\n  \"Cookie\": $json.auth_cookie,\n  \"Content-Type\": \"application/json\"\n}",
+        "bodyParametersJson": "={\n  \"chat_thread_id\": $json.resolved_thread_id,\n  \"user_request\": $node['Normalize Input'].json.user_request,\n  \"topic\": $node['Normalize Input'].json.topic,\n  \"max_rounds\": $node['Normalize Input'].json.max_rounds,\n  \"papers_per_round\": $node['Normalize Input'].json.papers_per_round,\n  \"min_papers\": $node['Normalize Input'].json.min_papers,\n  \"num_images\": $node['Normalize Input'].json.num_images,\n  \"aspect_ratio\": $node['Normalize Input'].json.aspect_ratio,\n  \"image_prompt\": $node['Normalize Input'].json.image_prompt || null,\n  \"send_slack_dm\": false,\n  \"slack_webhook_url\": null\n}",
+        "options": {
+          "fullResponse": false
+        }
+      },
+      "id": "run_orchestrator",
+      "name": "Run Project13 Orchestrator",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        780,
+        170
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.status || ''}}",
+              "operation": "contains",
+              "value2": "completed"
+            }
+          ]
+        }
+      },
+      "id": "if_workflow_completed",
+      "name": "Workflow Completed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        340,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{$node['Normalize Input'].json.backend_base_url + '/api/chat/threads/' + $node['Resolve Thread Context'].json.resolved_thread_id + '/messages'}}",
+        "method": "GET",
+        "jsonParameters": true,
+        "headerParametersJson": "={\n  \"Cookie\": $node['Resolve Thread Context'].json.auth_cookie\n}",
+        "options": {}
+      },
+      "id": "get_thread_messages",
+      "name": "Get Thread Messages",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [
+        1220,
+        130
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const run = $items('Run Project13 Orchestrator')[0].json;\nconst messages = items[0].json;\nconst digestMessageId = run.digest_message_id || null;\nlet digestText = null;\nif (Array.isArray(messages) && digestMessageId) {\n  const found = messages.find(m => String(m.id) === String(digestMessageId));\n  digestText = found?.content || null;\n}\nconst backend = $items('Normalize Input')[0].json.backend_base_url;\nconst imageAttachmentId = run.image_attachment_id || null;\nconst imageUrl = imageAttachmentId ? `${backend}/api/attachments/${imageAttachmentId}/download` : null;\nconst textFallback = 'Image generation unavailable in this run. Text digest is provided.';\nreturn [{\n  json: {\n    run_id: run.run_id || null,\n    status: run.status || null,\n    topic: run.topic || null,\n    digest_message_id: digestMessageId,\n    image_message_id: run.image_message_id || null,\n    image_attachment_id: imageAttachmentId,\n    errors: run.errors || [],\n    step_results: run.step_results || {},\n    final_digest_text: digestText || '(Digest message not found in thread history.)',\n    image_url: imageUrl,\n    text_fallback: textFallback\n  }\n}];"
+      },
+      "id": "build_final_payload",
+      "name": "Build Final Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        780,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.image_attachment_id || ''}}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        }
+      },
+      "id": "if_image_exists",
+      "name": "Image Exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1000,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "keepOnlySet": false,
+        "values": {
+          "string": [
+            {
+              "name": "final_status",
+              "value": "success_with_image"
+            },
+            {
+              "name": "summary",
+              "value": "={{$json.final_digest_text}}"
+            },
+            {
+              "name": "image_url",
+              "value": "={{$json.image_url}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "final_with_image",
+      "name": "Final Response (With Image)",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        1220,
+        -40
+      ]
+    },
+    {
+      "parameters": {
+        "keepOnlySet": false,
+        "values": {
+          "string": [
+            {
+              "name": "final_status",
+              "value": "success_text_only"
+            },
+            {
+              "name": "summary",
+              "value": "={{$json.final_digest_text}}"
+            },
+            {
+              "name": "note",
+              "value": "={{$json.text_fallback}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "final_text_only",
+      "name": "Final Response (Text Only)",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        1220,
+        90
+      ]
+    },
+    {
+      "parameters": {
+        "keepOnlySet": false,
+        "values": {
+          "string": [
+            {
+              "name": "final_status",
+              "value": "failed_auth"
+            },
+            {
+              "name": "error",
+              "value": "Login failed. Check service_email/service_password and backend URL."
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "auth_failed",
+      "name": "Auth Failed",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        -100,
+        230
+      ]
+    },
+    {
+      "parameters": {
+        "keepOnlySet": false,
+        "values": {
+          "string": [
+            {
+              "name": "final_status",
+              "value": "failed_workflow"
+            },
+            {
+              "name": "error",
+              "value": "={{($json.errors && $json.errors.length) ? $json.errors.join(' | ') : 'Orchestrator did not complete.'}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "workflow_failed",
+      "name": "Workflow Failed",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        560,
+        190
+      ]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Input": {
+      "main": [
+        [
+          {
+            "node": "Login",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Login": {
+      "main": [
+        [
+          {
+            "node": "Auth OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Auth OK?": {
+      "main": [
+        [
+          {
+            "node": "Extract Cookie",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Auth Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Cookie": {
+      "main": [
+        [
+          {
+            "node": "Thread ID Provided?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Thread ID Provided?": {
+      "main": [
+        [
+          {
+            "node": "Resolve Thread Context",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create Thread",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Thread": {
+      "main": [
+        [
+          {
+            "node": "Resolve Thread Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Thread Context": {
+      "main": [
+        [
+          {
+            "node": "Run Project13 Orchestrator",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Project13 Orchestrator": {
+      "main": [
+        [
+          {
+            "node": "Workflow Completed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Workflow Completed?": {
+      "main": [
+        [
+          {
+            "node": "Get Thread Messages",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Workflow Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Thread Messages": {
+      "main": [
+        [
+          {
+            "node": "Build Final Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Final Payload": {
+      "main": [
+        [
+          {
+            "node": "Image Exists?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Image Exists?": {
+      "main": [
+        [
+          {
+            "node": "Final Response (With Image)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Final Response (Text Only)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {},
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "description": "Project 13 workflow that calls backend orchestrator endpoint /api/workflows/research-image-run."
+  }
+}
