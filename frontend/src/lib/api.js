@@ -61,9 +61,17 @@ export function getApiBaseUrl() {
 export const apiClient = axios.create({
   baseURL: currentApiBaseUrl,
   withCredentials: true,
-  headers: {
-    "Content-Type": "application/json",
-  },
+});
+
+apiClient.interceptors.request.use((config) => {
+  if (typeof FormData !== "undefined" && config.data instanceof FormData) {
+    if (config.headers) {
+      delete config.headers["Content-Type"];
+      delete config.headers["content-type"];
+    }
+  }
+
+  return config;
 });
 
 export function extractApiError(error, fallbackMessage = "Something went wrong") {
@@ -72,11 +80,72 @@ export function extractApiError(error, fallbackMessage = "Something went wrong")
     if (typeof detail === "string" && detail.trim()) {
       return detail;
     }
+    if (Array.isArray(detail) && detail.length > 0) {
+      const normalized = detail
+        .map((item) => {
+          if (!item || typeof item !== "object") {
+            return "";
+          }
+
+          const location = Array.isArray(item.loc) ? item.loc.join(".") : "";
+          const message = typeof item.msg === "string" ? item.msg : "";
+
+          if (location && message) {
+            return `${location}: ${message}`;
+          }
+          return message || "";
+        })
+        .filter(Boolean)
+        .join("; ");
+
+      if (normalized) {
+        return normalized;
+      }
+    }
     if (error.message) {
       return error.message;
     }
   }
   return fallbackMessage;
+}
+
+function isNetworkLevelAxiosError(error) {
+  return axios.isAxiosError(error) && !error.response;
+}
+
+function getLoopbackFallbackBaseUrls(baseUrl) {
+  try {
+    const parsed = new URL(baseUrl);
+    const protocol = parsed.protocol || "http:";
+    const port = parsed.port || "8001";
+
+    const candidates = [`${protocol}//localhost:${port}`, `${protocol}//127.0.0.1:${port}`];
+
+    return candidates.filter((candidate) => normalizeBaseUrl(candidate) !== normalizeBaseUrl(baseUrl));
+  } catch {
+    return ["http://localhost:8001", "http://127.0.0.1:8001"].filter(
+      (candidate) => normalizeBaseUrl(candidate) !== normalizeBaseUrl(baseUrl)
+    );
+  }
+}
+
+function getPersistedAccessToken() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    const raw = window.localStorage.getItem("amzur-auth");
+    if (!raw) {
+      return null;
+    }
+
+    const parsed = JSON.parse(raw);
+    const token = parsed?.state?.accessToken;
+    return typeof token === "string" && token.trim() ? token.trim() : null;
+  } catch {
+    return null;
+  }
 }
 
 export const authApi = {
@@ -220,13 +289,47 @@ export const attachmentsApi = {
     const formData = new FormData();
     formData.append("file", file);
 
-    const response = await apiClient.post(`/api/attachments/upload?thread_id=${threadId}`, formData, {
-      headers: {
-        "Content-Type": "multipart/form-data",
-      },
-      onUploadProgress,
-    });
-    return response.data;
+    // Use a dedicated axios call for multipart uploads so shared JSON defaults
+    // or interceptors cannot interfere with FormData boundaries.
+    const primaryBaseUrl = getApiBaseUrl();
+    const accessToken = getPersistedAccessToken();
+    const attemptUpload = (baseUrl) =>
+      axios.post(`${baseUrl}/api/attachments/upload`, formData, {
+        withCredentials: true,
+        headers: accessToken
+          ? {
+              Authorization: `Bearer ${accessToken}`,
+            }
+          : undefined,
+        params: {
+          thread_id: threadId,
+        },
+        onUploadProgress,
+      });
+
+    try {
+      const response = await attemptUpload(primaryBaseUrl);
+      return response.data;
+    } catch (error) {
+      if (!isNetworkLevelAxiosError(error)) {
+        throw error;
+      }
+
+      const fallbackBaseUrls = getLoopbackFallbackBaseUrls(primaryBaseUrl);
+
+      for (const fallbackBaseUrl of fallbackBaseUrls) {
+        try {
+          const retryResponse = await attemptUpload(fallbackBaseUrl);
+          return retryResponse.data;
+        } catch (retryError) {
+          if (!isNetworkLevelAxiosError(retryError)) {
+            throw retryError;
+          }
+        }
+      }
+
+      throw error;
+    }
   },
 
   metadata: async ({ attachmentId }) => {

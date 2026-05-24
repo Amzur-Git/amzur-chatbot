@@ -35,6 +35,7 @@ backend/.env
 frontend/.env
 
 # Runtime data
+chroma_db/
 backend/chroma_db/
 backend/uploads/
 uploads/

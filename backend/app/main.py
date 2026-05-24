@@ -63,7 +63,7 @@ def _is_production() -> bool:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_build_cors_origins() if _is_production() else ["*"],
+    allow_origins=_build_cors_origins(),
     allow_origin_regex=None,
     allow_credentials=True,
     allow_methods=["*"],

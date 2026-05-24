@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import math
 from datetime import datetime, timedelta
 from pathlib import Path
 import uuid
@@ -56,6 +57,33 @@ class AttachmentService:
             return None
 
     @staticmethod
+    def _normalize_metadata_for_db(value: Any) -> Any:
+        if value is None or isinstance(value, (str, int, bool)):
+            return value
+        if isinstance(value, float):
+            return value if math.isfinite(value) else None
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, timedelta):
+            return str(value)
+        if isinstance(value, dict):
+            return {
+                str(key): AttachmentService._normalize_metadata_for_db(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, (list, tuple, set)):
+            return [AttachmentService._normalize_metadata_for_db(item) for item in value]
+
+        # Handle numpy/pandas scalar types when present.
+        if hasattr(value, "item"):
+            try:
+                return AttachmentService._normalize_metadata_for_db(value.item())
+            except Exception:
+                pass
+
+        return str(value)
+
+    @staticmethod
     def collect_visual_data_urls(attachments: list[Attachment], max_items: int = 6) -> list[str]:
         if not attachments or max_items <= 0:
             return []
@@ -104,6 +132,7 @@ class AttachmentService:
 
         try:
             metadata = process_file(file_type, storage_path)
+            metadata = AttachmentService._normalize_metadata_for_db(metadata)
         except Exception as error:
             storage_path.unlink(missing_ok=True)
             if isinstance(error, HTTPException):

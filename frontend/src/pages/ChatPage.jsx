@@ -770,7 +770,31 @@ export default function ChatPage() {
     }
   };
 
+  const resolveThreadIdForServer = useCallback(async (candidateThreadId = null) => {
+    let destinationThreadId = candidateThreadId || activeThreadId;
+
+    if (destinationThreadId && !String(destinationThreadId).startsWith("temp-")) {
+      return String(destinationThreadId);
+    }
+
+    // If create-thread is already in flight, wait briefly for temp->real id reconciliation.
+    if (createThreadMutation.isPending) {
+      const deadline = Date.now() + 1_500;
+      while (Date.now() < deadline) {
+        const currentId = useChatStore.getState().activeThreadId;
+        if (currentId && !String(currentId).startsWith("temp-")) {
+          return String(currentId);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+
+    const createdThread = await createThreadMutation.mutateAsync({});
+    return String(createdThread.id);
+  }, [activeThreadId, createThreadMutation]);
+
   const uploadFilesToThread = async (threadId, files) => {
+    const destinationThreadId = await resolveThreadIdForServer(threadId);
     const localItems = files.map((file) => buildLocalAttachment(file));
     setPendingAttachments((current) => [...current, ...localItems]);
 
@@ -780,7 +804,7 @@ export default function ChatPage() {
 
         try {
           const uploaded = await uploadAttachmentMutation.mutateAsync({
-            threadId,
+            threadId: destinationThreadId,
             file,
             onUploadProgress: (event) => {
               const nextProgress = event.total
@@ -824,11 +848,7 @@ export default function ChatPage() {
 
   const handlePickFiles = async (files) => {
     try {
-      let destinationThreadId = activeThreadId;
-      if (!destinationThreadId) {
-        const createdThread = await createThreadMutation.mutateAsync({});
-        destinationThreadId = String(createdThread.id);
-      }
+      const destinationThreadId = await resolveThreadIdForServer(activeThreadId);
 
       await uploadFilesToThread(destinationThreadId, files);
     } catch {
@@ -894,11 +914,7 @@ export default function ChatPage() {
     }
 
     try {
-      let destinationThreadId = activeThreadId;
-      if (!destinationThreadId) {
-        const createdThread = await createThreadMutation.mutateAsync({});
-        destinationThreadId = String(createdThread.id);
-      }
+      const destinationThreadId = await resolveThreadIdForServer(activeThreadId);
 
       const local = buildLocalAttachment(selected);
       setSheetsFileAttachment({
@@ -945,6 +961,7 @@ export default function ChatPage() {
     activeThreadId,
     createThreadMutation,
     loadSheetsPreviewFromPayload,
+    resolveThreadIdForServer,
     uploadAttachmentMutation,
   ]);
 

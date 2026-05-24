@@ -283,6 +283,34 @@ class TableProcessor:
     MAX_ROWS_FOR_FULL_PAYLOAD = 150
 
     @staticmethod
+    def _normalize_for_json(value: Any) -> Any:
+        if isinstance(value, pd.Timestamp):
+            return value.isoformat()
+        if isinstance(value, pd.Timedelta):
+            return str(value)
+        if isinstance(value, dict):
+            return {str(key): TableProcessor._normalize_for_json(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [TableProcessor._normalize_for_json(item) for item in value]
+        if isinstance(value, tuple):
+            return [TableProcessor._normalize_for_json(item) for item in value]
+
+        # Handle numpy scalar types without importing numpy directly.
+        if hasattr(value, "item") and callable(getattr(value, "item")):
+            try:
+                return TableProcessor._normalize_for_json(value.item())
+            except Exception:
+                pass
+
+        try:
+            if pd.isna(value):
+                return ""
+        except Exception:
+            pass
+
+        return value
+
+    @staticmethod
     def _read_frame(file_path: Path) -> pd.DataFrame:
         suffix = file_path.suffix.lower()
         try:
@@ -323,7 +351,7 @@ class TableProcessor:
         frame = frame.fillna("")
         row_count, col_count = frame.shape
         columns = [str(column) for column in frame.columns.tolist()]
-        sample = frame.head(10).to_dict(orient="records")
+        sample = TableProcessor._normalize_for_json(frame.head(10).to_dict(orient="records"))
 
         payload: dict[str, Any] = {
             "rows": int(row_count),
@@ -334,7 +362,7 @@ class TableProcessor:
         }
 
         if row_count <= TableProcessor.MAX_ROWS_FOR_FULL_PAYLOAD:
-            payload["records"] = frame.to_dict(orient="records")
+            payload["records"] = TableProcessor._normalize_for_json(frame.to_dict(orient="records"))
 
         return payload
 

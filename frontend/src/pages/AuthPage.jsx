@@ -44,6 +44,7 @@ export default function AuthPage() {
     onSuccess: (data) => {
       setAuth({
         user: mapUser(data),
+        accessToken: data.access_token ?? null,
       });
       setError("");
     },

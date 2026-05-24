@@ -6,15 +6,18 @@ export const useAuthStore = create(
     (set) => ({
       isAuthenticated: false,
       user: null,
-      setAuth: ({ user }) =>
-        set({
+      accessToken: null,
+      setAuth: ({ user, accessToken }) =>
+        set((state) => ({
           isAuthenticated: true,
           user,
-        }),
+          accessToken: accessToken ?? state.accessToken ?? null,
+        })),
       clearAuth: () =>
         set({
           isAuthenticated: false,
           user: null,
+          accessToken: null,
         }),
     }),
     {
@@ -22,6 +25,7 @@ export const useAuthStore = create(
       partialize: (state) => ({
         isAuthenticated: state.isAuthenticated,
         user: state.user,
+        accessToken: state.accessToken,
       }),
     }
   )
