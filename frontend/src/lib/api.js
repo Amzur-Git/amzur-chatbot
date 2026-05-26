@@ -345,7 +345,7 @@ export const attachmentsApi = {
   downloadUrl: (attachmentId) => `${getApiBaseUrl()}/api/attachments/${attachmentId}/download`,
 };
 
-const SHEETS_API_TIMEOUT_MS = 60_000;
+const SHEETS_API_TIMEOUT_MS = 180_000;
 
 export const sheetsApi = {
   loadPreview: async ({ sheetUrl = null, fileId = null }) => {

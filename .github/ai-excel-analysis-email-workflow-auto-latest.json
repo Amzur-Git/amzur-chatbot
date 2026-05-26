@@ -140,7 +140,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const payload = $json.body ?? $json;\nconst threads = Array.isArray(payload) ? payload : [];\nconst manualThread = $node['Normalize Input'].json.chat_thread_id || '';\n\nlet chatThreadId = manualThread;\nlet threadTitle = '';\n\nif (!chatThreadId) {\n  if (!threads.length) {\n    throw new Error('No chat threads found for this user.');\n  }\n  chatThreadId = String(threads[0].id || '').trim();\n  threadTitle = String(threads[0].title || '').trim();\n}\n\nif (!chatThreadId) {\n  throw new Error('Unable to resolve chat_thread_id.');\n}\n\nreturn [{ json: { chat_thread_id: chatThreadId, thread_title: threadTitle } }];"
+        "jsCode": "const manualThread = ($node['Normalize Input'].json.chat_thread_id || '').trim();\n\nconst normalizeThreads = (raw) => {\n  if (Array.isArray(raw)) return raw;\n  if (!raw || typeof raw !== 'object') return [];\n\n  const keys = ['threads', 'items', 'data', 'results'];\n  for (const key of keys) {\n    if (Array.isArray(raw[key])) return raw[key];\n  }\n\n  if (Array.isArray(raw.body)) return raw.body;\n\n  if (raw.body && typeof raw.body === 'object') {\n    for (const key of keys) {\n      if (Array.isArray(raw.body[key])) return raw.body[key];\n    }\n    if (raw.body.id) return [raw.body];\n  }\n\n  if (raw.id) return [raw];\n  return [];\n};\n\nlet threads = normalizeThreads($json.body ?? $json);\n\nif (!threads.length) {\n  const merged = [];\n  for (const item of $input.all()) {\n    merged.push(...normalizeThreads(item.json));\n  }\n  threads = merged;\n}\n\nconst seen = new Set();\nthreads = threads.filter((t) => {\n  const id = String(t?.id || '').trim();\n  if (!id || seen.has(id)) return false;\n  seen.add(id);\n  return true;\n});\n\nlet chatThreadId = manualThread;\nlet threadTitle = '';\n\nif (!chatThreadId) {\n  if (!threads.length) {\n    throw new Error('No chat threads found for this user.');\n  }\n\n  const sorted = [...threads].sort((a, b) => {\n    const ta = Date.parse(a?.created_at || a?.updated_at || '') || 0;\n    const tb = Date.parse(b?.created_at || b?.updated_at || '') || 0;\n    return tb - ta;\n  });\n\n  const picked = sorted[0] || threads[0];\n  chatThreadId = String(picked?.id || '').trim();\n  threadTitle = String(picked?.title || '').trim();\n} else {\n  const matched = threads.find((t) => String(t?.id || '').trim() === chatThreadId);\n  if (matched) threadTitle = String(matched?.title || '').trim();\n}\n\nif (!chatThreadId) {\n  throw new Error('Unable to resolve chat_thread_id.');\n}\n\nreturn [{ json: { chat_thread_id: chatThreadId, thread_title: threadTitle } }];"
       },
       "id": "99999999-9999-4999-8999-999999999999",
       "name": "Resolve Latest Thread",
@@ -154,7 +154,7 @@
     {
       "parameters": {
         "method": "GET",
-        "url": "={{$node[\"Normalize Input\"].json.backend_base_url + '/api/chat/threads/' + $node[\"Resolve Latest Thread\"].json.chat_thread_id + '/messages'}}",
+        "url": "={{$node[\"Normalize Input\"].json.backend_base_url + '/api/chat/threads/' + $node[\"Resolve Latest Thread\"].json.chat_thread_id + '/context'}}",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -181,7 +181,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const payload = $json.body ?? $json;\nconst messages = Array.isArray(payload) ? payload : [];\n\nconst manualQuestion = ($node['Normalize Input'].json.question || '').trim();\nconst manualFileId = ($node['Normalize Input'].json.file_id || '').trim();\nconst threadId = $node['Resolve Latest Thread'].json.chat_thread_id;\n\nlet latestUserMessage = null;\nfor (let i = messages.length - 1; i >= 0; i -= 1) {\n  const m = messages[i];\n  if ((m.role || '').toLowerCase() === 'user' && String(m.content || '').trim() !== '') {\n    latestUserMessage = m;\n    break;\n  }\n}\n\nlet latestTableAttachment = null;\nfor (let i = messages.length - 1; i >= 0; i -= 1) {\n  const msg = messages[i] || {};\n  const attachments = Array.isArray(msg.attachments) ? msg.attachments : [];\n  for (let j = attachments.length - 1; j >= 0; j -= 1) {\n    const a = attachments[j] || {};\n    if ((a.file_type || '').toLowerCase() === 'table' && String(a.id || '').trim() !== '') {\n      latestTableAttachment = a;\n      break;\n    }\n  }\n  if (latestTableAttachment) break;\n}\n\nconst question = manualQuestion || String(latestUserMessage?.content || '').trim();\nconst fileId = manualFileId || String(latestTableAttachment?.id || '').trim();\n\nif (!question) {\n  throw new Error('Unable to resolve latest user question. Pass question explicitly or ensure thread has user messages.');\n}\n\nif (!fileId) {\n  throw new Error('Unable to resolve latest table file_id. Pass file_id explicitly or ensure thread has a table attachment.');\n}\n\nreturn [{\n  json: {\n    chat_thread_id: threadId,\n    question,\n    file_id: fileId,\n    source_user_message_id: latestUserMessage?.id || '',\n    source_attachment_name: latestTableAttachment?.file_name || ''\n  }\n}];"
+        "jsCode": "const manualQuestion = ($node['Normalize Input'].json.question || '').trim();\nconst manualFileId = ($node['Normalize Input'].json.file_id || '').trim();\nconst threadId = $node['Resolve Latest Thread'].json.chat_thread_id;\n\nconst normalizeMessages = (raw) => {\n  if (Array.isArray(raw)) return raw;\n  if (!raw || typeof raw !== 'object') return [];\n\n  const keys = ['messages', 'items', 'data', 'results'];\n  for (const key of keys) {\n    if (Array.isArray(raw[key])) return raw[key];\n  }\n\n  if (Array.isArray(raw.body)) return raw.body;\n\n  if (raw.body && typeof raw.body === 'object') {\n    for (const key of keys) {\n      if (Array.isArray(raw.body[key])) return raw.body[key];\n    }\n    if (raw.body.role) return [raw.body];\n  }\n\n  if (raw.role) return [raw];\n  return [];\n};\n\nconst normalizeAttachments = (raw) => {\n  if (Array.isArray(raw)) return raw;\n  if (!raw || typeof raw !== 'object') return [];\n\n  if (Array.isArray(raw.attachments)) return raw.attachments;\n  if (raw.body && typeof raw.body === 'object' && Array.isArray(raw.body.attachments)) {\n    return raw.body.attachments;\n  }\n\n  return [];\n};\n\nlet messages = normalizeMessages($json.body ?? $json);\nlet threadAttachments = normalizeAttachments($json.body ?? $json);\n\nif (!messages.length || !threadAttachments.length) {\n  const mergedMessages = [];\n  const mergedAttachments = [];\n  for (const item of $input.all()) {\n    mergedMessages.push(...normalizeMessages(item.json));\n    mergedAttachments.push(...normalizeAttachments(item.json));\n  }\n  if (!messages.length) messages = mergedMessages;\n  if (!threadAttachments.length) threadAttachments = mergedAttachments;\n}\n\nconst seenMessages = new Set();\nmessages = messages.filter((m) => {\n  const id = String(m?.id || '').trim();\n  if (!id || seenMessages.has(id)) return false;\n  seenMessages.add(id);\n  return true;\n});\n\nmessages.sort((a, b) => {\n  const ta = Date.parse(a?.created_at || a?.updated_at || '') || 0;\n  const tb = Date.parse(b?.created_at || b?.updated_at || '') || 0;\n  return ta - tb;\n});\n\nconst seenAttachments = new Set();\nthreadAttachments = threadAttachments.filter((a) => {\n  const id = String(a?.id || '').trim();\n  if (!id || seenAttachments.has(id)) return false;\n  seenAttachments.add(id);\n  return true;\n});\n\nthreadAttachments.sort((a, b) => {\n  const ta = Date.parse(a?.created_at || '') || 0;\n  const tb = Date.parse(b?.created_at || '') || 0;\n  return ta - tb;\n});\n\nlet latestUserMessage = null;\nfor (let i = messages.length - 1; i >= 0; i -= 1) {\n  const m = messages[i];\n  if ((m.role || '').toLowerCase() === 'user' && String(m.content || '').trim() !== '') {\n    latestUserMessage = m;\n    break;\n  }\n}\n\nlet latestTableAttachment = null;\nfor (let i = threadAttachments.length - 1; i >= 0; i -= 1) {\n  const a = threadAttachments[i] || {};\n  if ((a.file_type || '').toLowerCase() === 'table' && String(a.id || '').trim() !== '') {\n    latestTableAttachment = a;\n    break;\n  }\n}\n\nif (!latestTableAttachment) {\n  for (let i = messages.length - 1; i >= 0; i -= 1) {\n    const msg = messages[i] || {};\n    const attachments = Array.isArray(msg.attachments) ? msg.attachments : [];\n    for (let j = attachments.length - 1; j >= 0; j -= 1) {\n      const a = attachments[j] || {};\n      if ((a.file_type || '').toLowerCase() === 'table' && String(a.id || '').trim() !== '') {\n        latestTableAttachment = a;\n        break;\n      }\n    }\n    if (latestTableAttachment) break;\n  }\n}\n\nconst question = manualQuestion || String(latestUserMessage?.content || '').trim();\nconst fileId = manualFileId || String(latestTableAttachment?.id || '').trim();\n\nif (!question) {\n  throw new Error('Unable to resolve latest user question. Pass question explicitly or ensure thread has user messages.');\n}\n\nif (!fileId) {\n  throw new Error('Unable to resolve latest table file_id. Pass file_id explicitly or ensure thread has at least one uploaded table attachment.');\n}\n\nreturn [{\n  json: {\n    chat_thread_id: threadId,\n    question,\n    file_id: fileId,\n    source_user_message_id: latestUserMessage?.id || '',\n    source_attachment_name: latestTableAttachment?.file_name || ''\n  }\n}];"
       },
       "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
       "name": "Resolve Latest Context",
@@ -264,7 +264,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const payload = $json.body ?? $json;\nconst resolved = $node['Resolve Latest Context'].json;\n\nconst question = resolved.question;\nconst threadId = resolved.chat_thread_id || '';\n\nconst analysis = payload.answer\n  ?? payload.analysis\n  ?? payload.response\n  ?? payload.result?.answer\n  ?? payload.result?.analysis\n  ?? JSON.stringify(payload.result ?? payload, null, 2);\n\nconst shape = payload.dataframe_shape\n  ?? payload.result?.dataframe_shape\n  ?? payload.shape\n  ?? 'N/A';\n\nlet columns = payload.columns\n  ?? payload.result?.columns\n  ?? payload.result?.column_names\n  ?? [];\n\nif (!Array.isArray(columns)) {\n  if (typeof columns === 'string') {\n    columns = columns.split(',').map(c => c.trim()).filter(Boolean);\n  } else {\n    columns = [];\n  }\n}\n\nconst columnsText = columns.length ? columns.join(', ') : 'N/A';\n\nconst textBody = [\n  `Question: ${question}`,\n  '',\n  'AI Analysis:',\n  String(analysis),\n  '',\n  `DataFrame Shape: ${String(shape)}`,\n  `Columns: ${columnsText}`,\n  `Thread ID: ${threadId || 'N/A'}`,\n  `File ID: ${resolved.file_id || 'N/A'}`,\n  resolved.source_attachment_name ? `Source File: ${resolved.source_attachment_name}` : ''\n].filter(Boolean).join('\\n');\n\nreturn [{\n  json: {\n    text_body: textBody,\n    thread_id: threadId,\n    question,\n    file_id: resolved.file_id\n  }\n}];"
+        "jsCode": "const payload = $json.body ?? $json;\nconst resolved = $node['Resolve Latest Context'].json;\n\nconst question = resolved.question;\nconst threadId = resolved.chat_thread_id || '';\n\nconst analysis = payload.answer\n  ?? payload.analysis\n  ?? payload.response\n  ?? payload.result?.answer\n  ?? payload.result?.analysis\n  ?? JSON.stringify(payload.result ?? payload, null, 2);\n\nconst shape = payload.dataframe_shape\n  ?? payload.result?.dataframe_shape\n  ?? payload.shape\n  ?? 'N/A';\n\nlet columns = payload.columns\n  ?? payload.result?.columns\n  ?? payload.result?.column_names\n  ?? [];\n\nif (!Array.isArray(columns)) {\n  if (typeof columns === 'string') {\n    columns = columns.split(',').map(c => c.trim()).filter(Boolean);\n  } else {\n    columns = [];\n  }\n}\n\nconst columnsText = columns.length ? columns.join(', ') : 'N/A';\n\nconst textBody = [\n  `Question: ${question}`,\n  '',\n  'AI Analysis:',\n  String(analysis),\n  '',\n  `DataFrame Shape: ${String(shape)}`,\n  `Columns: ${columnsText}`,\n  `Thread ID: ${threadId || 'N/A'}`,\n  `File ID: ${resolved.file_id || 'N/A'}`,\n  resolved.source_attachment_name ? `Source File: ${resolved.source_attachment_name}` : ''\n].filter(Boolean).join('\\n');\n\nreturn [{\n  json: {\n    text_body: textBody,\n    analysis_text: String(analysis),\n    thread_id: threadId,\n    question,\n    file_id: resolved.file_id\n  }\n}];"
       },
       "id": "ffffffff-ffff-4fff-8fff-ffffffffffff",
       "name": "Build Email Content",
@@ -280,7 +280,7 @@
         "fromEmail": "={{$node[\"Normalize Input\"].json.service_email}}",
         "toEmail": "={{$node[\"Normalize Input\"].json.recipient_email}}",
         "subject": "={{$node[\"Normalize Input\"].json.email_subject}}",
-        "text": "={{$json.text_body}}",
+        "text": "={{$node[\"Build Email Content\"].json.text_body}}",
         "options": {}
       },
       "id": "12121212-1212-4212-8212-121212121212",
@@ -288,22 +288,38 @@
       "type": "n8n-nodes-base.emailSend",
       "typeVersion": 2,
       "position": [
-        3600,
+        3840,
         170
       ]
     },
     {
       "parameters": {
-        "options": {}
+        "jsCode": "return [{ json: { status: 'success', ticket_logged: true, email_sent: true, execution_id: String($execution.id || '') } }];"
       },
       "id": "13131313-1313-4313-8313-131313131313",
       "name": "Success Payload",
-      "type": "n8n-nodes-base.set",
-      "typeVersion": 3.4,
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
       "position": [
-        3840,
+        4080,
         170
       ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{ `INSERT INTO tickets (title, description, status, category, priority, user_email, source, execution_id, created_at) VALUES ('${String($node[\"Build Email Content\"].json.question || \"\").replace(/'/g, \"''\")}', '${String($node[\"Build Email Content\"].json.analysis_text || \"\").replace(/'/g, \"''\")}', 'COMPLETED', 'EXCEL_ANALYSIS', 'MEDIUM', '${String($node[\"Normalize Input\"].json.recipient_email || \"\").replace(/'/g, \"''\")}', 'N8N_WORKFLOW', '${String($execution.id || \"\").replace(/'/g, \"''\")}', NOW());` }}",
+        "options": {}
+      },
+      "id": "14141414-1414-4414-8414-141414141414",
+      "name": "Log Ticket (Postgres)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        3600,
+        20
+      ],
+      "continueOnFail": true
     }
   ],
   "pinData": {},
@@ -458,7 +474,7 @@
       "main": [
         [
           {
-            "node": "Send Email",
+            "node": "Log Ticket (Postgres)",
             "type": "main",
             "index": 0
           }
@@ -470,6 +486,17 @@
         [
           {
             "node": "Success Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Ticket (Postgres)": {
+      "main": [
+        [
+          {
+            "node": "Send Email",
             "type": "main",
             "index": 0
           }

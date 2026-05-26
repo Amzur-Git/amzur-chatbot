@@ -46,6 +46,11 @@ class MessageResponse(BaseModel):
         from_attributes = True
 
 
+class ThreadContextResponse(BaseModel):
+    messages: list[MessageResponse] = Field(default_factory=list)
+    attachments: list[AttachmentMetadataResponse] = Field(default_factory=list)
+
+
 class MessageEditRequest(BaseModel):
     chat_thread_id: uuid.UUID
     content: str = Field(min_length=1)

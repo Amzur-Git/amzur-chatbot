@@ -159,3 +159,82 @@ def test_invalid_tool_observation_retries_and_returns_answer(monkeypatch):
     assert "| Businees Unit | Total Expense |" in result["answer"]
     assert "Total: 300" in result["answer"]
     assert len(fake_agent.inputs) == 2
+
+
+def test_deterministic_top_products_by_region_returns_markdown_without_agent(monkeypatch):
+    def _should_not_call_agent(**kwargs):  # pragma: no cover - guardrail
+        raise AssertionError("LLM agent should not be called for deterministic medium analytics query")
+
+    monkeypatch.setattr(
+        sheets_query_service,
+        "create_pandas_dataframe_agent",
+        _should_not_call_agent,
+    )
+
+    df = pd.DataFrame(
+        {
+            "Region": ["East", "East", "East", "West", "West", "West"],
+            "Product": ["A", "A", "B", "A", "B", "C"],
+            "TotalPrice": [100, 50, 120, 90, 200, 10],
+            "Date": pd.to_datetime([
+                "2024-01-01",
+                "2024-02-01",
+                "2024-03-01",
+                "2024-01-02",
+                "2024-02-03",
+                "2024-03-04",
+            ]),
+        }
+    )
+
+    result = sheets_query_service.query_dataframe_with_langchain(
+        df,
+        "Show top 2 products by revenue for each region in 2024 in a table",
+    )
+
+    assert result["success"] is True
+    assert "| Region" in result["answer"]
+    assert "| East" in result["answer"]
+    assert "| West" in result["answer"]
+    assert "Rank" in result["answer"]
+    assert " 1 " in result["answer"]
+    assert result["intermediate_steps"] == []
+
+
+def test_deterministic_best_worst_month_by_payment_method_returns_markdown_without_agent(monkeypatch):
+    def _should_not_call_agent(**kwargs):  # pragma: no cover - guardrail
+        raise AssertionError("LLM agent should not be called for deterministic medium analytics query")
+
+    monkeypatch.setattr(
+        sheets_query_service,
+        "create_pandas_dataframe_agent",
+        _should_not_call_agent,
+    )
+
+    df = pd.DataFrame(
+        {
+            "PaymentMethod": ["Cash", "Cash", "Cash", "Card", "Card", "Card"],
+            "TotalPrice": [100, 40, 80, 50, 500, 20],
+            "Date": pd.to_datetime([
+                "2024-01-05",
+                "2024-02-10",
+                "2024-02-18",
+                "2024-01-02",
+                "2024-03-07",
+                "2024-02-01",
+            ]),
+        }
+    )
+
+    result = sheets_query_service.query_dataframe_with_langchain(
+        df,
+        "Find best and worst month by total revenue for each payment method and show in table",
+    )
+
+    assert result["success"] is True
+    assert "| Payment Method" in result["answer"]
+    assert "Cash" in result["answer"]
+    assert "Card" in result["answer"]
+    assert "Best Month" in result["answer"]
+    assert "Worst Month" in result["answer"]
+    assert result["intermediate_steps"] == []

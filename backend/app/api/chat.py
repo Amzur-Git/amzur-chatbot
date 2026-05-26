@@ -1,9 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 from app.core.config import settings
 from app.db.session import get_db
 from app.core.deps import get_current_user
 from app.models.user import User
+from app.models.attachment import Attachment
 from app.schemas.chat import (
     ChatRequest,
     MessageEditRequest,
@@ -11,6 +13,7 @@ from app.schemas.chat import (
     MessageRetryRequest,
     MessageRetryResponse,
     MessageResponse,
+    ThreadContextResponse,
     ThreadCreateRequest,
     ThreadResponse,
     ThreadUpdateRequest,
@@ -126,6 +129,34 @@ async def get_thread_messages(
 
     history = await ChatService.get_thread_history(db, current_user.id, thread_id, limit=100)
     return [_to_message_response(message) for message in history]
+
+
+@router.get("/threads/{thread_id}/context", response_model=ThreadContextResponse)
+async def get_thread_context(
+    thread_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    thread = await ChatService.get_thread(db, current_user.id, thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+
+    history = await ChatService.get_thread_history(db, current_user.id, thread_id, limit=100)
+
+    attachments_result = await db.execute(
+        select(Attachment)
+        .where(
+            Attachment.thread_id == thread_id,
+            Attachment.user_id == current_user.id,
+        )
+        .order_by(Attachment.created_at.desc())
+    )
+    attachments = attachments_result.scalars().all()
+
+    return ThreadContextResponse(
+        messages=[_to_message_response(message) for message in history],
+        attachments=_to_attachment_metadata(attachments),
+    )
 
 
 @router.post("/threads/{thread_id}/send", response_model=MessageResponse)

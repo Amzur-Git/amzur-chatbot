@@ -68,6 +68,7 @@ _FINANCE_TOTAL_PATTERN = re.compile(
     r"\btotal\s+(?:spent|expense|cost)\s+on\s+(?P<account>.+?)\s+for\s+(?:(?P<year1>\d{4})\s+(?P<month1>[A-Za-z]+)|(?P<month2>[A-Za-z]+)\s+(?P<year2>\d{4}))\b",
     re.IGNORECASE,
 )
+_TOP_N_PATTERN = re.compile(r"\btop\s+(?P<n>\d{1,3})\b", re.IGNORECASE)
 
 _MONTH_TO_NUMBER = {
     "jan": 1,
@@ -254,6 +255,203 @@ def _find_month_amount_column(columns: list[str], month: int) -> str:
     for label in month_labels:
         if label in normalized_candidates:
             return normalized_candidates[label]
+
+    return ""
+
+
+def _extract_year(question: str) -> int | None:
+    match = re.search(r"\b(19|20)\d{2}\b", question or "")
+    if not match:
+        return None
+    return int(match.group(0))
+
+
+def _extract_top_n(question: str, default: int = 5) -> int:
+    match = _TOP_N_PATTERN.search(question or "")
+    if not match:
+        return default
+    try:
+        value = int(match.group("n"))
+    except Exception:
+        return default
+    return max(1, min(value, 100))
+
+
+def _resolve_month_series(df: pd.DataFrame, month_col: str, date_col: str) -> pd.Series:
+    if month_col:
+        month_raw = df[month_col].astype(str).str.strip().str.lower()
+        month_num = pd.to_numeric(month_raw, errors="coerce")
+        month_name_num = month_raw.map(_MONTH_TO_NUMBER)
+        month_effective = month_num.where(month_num.notna(), pd.to_numeric(month_name_num, errors="coerce"))
+        return month_effective
+    if date_col:
+        parsed_dates = pd.to_datetime(df[date_col], errors="coerce")
+        return parsed_dates.dt.month
+    return pd.Series([pd.NA] * len(df), index=df.index)
+
+
+def _resolve_month_label_series(df: pd.DataFrame, month_col: str, date_col: str) -> pd.Series:
+    if date_col:
+        parsed_dates = pd.to_datetime(df[date_col], errors="coerce")
+        return parsed_dates.dt.to_period("M").astype(str)
+    if month_col:
+        month_num = _resolve_month_series(df, month_col, date_col)
+        return month_num.map(
+            lambda idx: next(
+                (
+                    name.capitalize()
+                    for name, num in _MONTH_TO_NUMBER.items()
+                    if num == idx and len(name) > 3
+                ),
+                str(int(idx)) if pd.notna(idx) else "",
+            )
+        )
+    return pd.Series([""] * len(df), index=df.index)
+
+
+def _deterministic_top_products_by_region_answer(df: pd.DataFrame, question: str) -> str:
+    normalized = (question or "").lower()
+    if "product" not in normalized or "region" not in normalized:
+        return ""
+    if "top" not in normalized:
+        return ""
+    if not any(token in normalized for token in ("revenue", "sales", "totalprice", "total price", "amount")):
+        return ""
+
+    columns = [str(col) for col in df.columns]
+    region_col = _find_column_by_tokens(columns, [("region",)])
+    product_col = _find_column_by_tokens(columns, [("product",)])
+    amount_col = _find_column_by_tokens(columns, [("revenue",), ("sale",), ("total", "price"), ("amount",)])
+    year_col = _find_column_by_tokens(columns, [("year",), ("fiscal", "year")])
+    date_col = _find_column_by_tokens(columns, [("date",), ("order", "date"), ("transaction", "date")])
+
+    if not region_col or not product_col or not amount_col:
+        return ""
+
+    working = df.copy()
+    amount_values = _to_numeric_series(working[amount_col])
+    if amount_values.notna().sum() == 0:
+        return ""
+    working["__amount__"] = amount_values.fillna(0)
+
+    requested_year = _extract_year(question)
+    if requested_year:
+        if year_col:
+            year_values = pd.to_numeric(
+                working[year_col].astype(str).str.extract(r"(\d{4})", expand=False),
+                errors="coerce",
+            )
+        elif date_col:
+            year_values = pd.to_datetime(working[date_col], errors="coerce").dt.year
+        else:
+            year_values = pd.Series([pd.NA] * len(working), index=working.index)
+
+        working = working[year_values == requested_year].copy()
+        if working.empty:
+            return "No matching data found for your query in the current sheet."
+
+    top_n = _extract_top_n(question, default=5)
+    grouped = (
+        working.groupby([region_col, product_col], as_index=False)
+        .agg(total_revenue=("__amount__", "sum"))
+    )
+    if grouped.empty:
+        return "No matching data found for your query in the current sheet."
+
+    grouped["rank"] = grouped.groupby(region_col)["total_revenue"].rank(method="first", ascending=False)
+    top_grouped = grouped[grouped["rank"] <= top_n].sort_values([region_col, "rank", product_col])
+    if top_grouped.empty:
+        return "No matching data found for your query in the current sheet."
+
+    display = top_grouped.rename(
+        columns={
+            region_col: "Region",
+            product_col: "Product",
+            "total_revenue": "Total Revenue",
+            "rank": "Rank",
+        }
+    )[["Region", "Rank", "Product", "Total Revenue"]]
+
+    display["Rank"] = display["Rank"].astype(int)
+    display["Total Revenue"] = display["Total Revenue"].round(4)
+    return display.to_markdown(index=False)
+
+
+def _deterministic_best_worst_month_by_payment_method_answer(df: pd.DataFrame, question: str) -> str:
+    normalized = (question or "").lower()
+    if "payment" not in normalized or "method" not in normalized:
+        return ""
+    if "month" not in normalized:
+        return ""
+    if "best" not in normalized or "worst" not in normalized:
+        return ""
+    if not any(token in normalized for token in ("revenue", "sales", "totalprice", "total price", "amount")):
+        return ""
+
+    columns = [str(col) for col in df.columns]
+    payment_col = _find_column_by_tokens(columns, [("payment", "method"), ("payment",)])
+    amount_col = _find_column_by_tokens(columns, [("revenue",), ("sale",), ("total", "price"), ("amount",)])
+    month_col = _find_column_by_tokens(columns, [("month",), ("period",)])
+    date_col = _find_column_by_tokens(columns, [("date",), ("order", "date"), ("transaction", "date")])
+
+    if not payment_col or not amount_col:
+        return ""
+    if not month_col and not date_col:
+        return ""
+
+    working = df.copy()
+    working["__amount__"] = _to_numeric_series(working[amount_col])
+    if working["__amount__"].notna().sum() == 0:
+        return ""
+
+    working["__month_label__"] = _resolve_month_label_series(working, month_col, date_col)
+    working = working[working["__month_label__"].astype(str).str.strip() != ""].copy()
+    if working.empty:
+        return "No matching data found for your query in the current sheet."
+
+    grouped = (
+        working.groupby([payment_col, "__month_label__"], as_index=False)
+        .agg(total_revenue=("__amount__", "sum"))
+    )
+    if grouped.empty:
+        return "No matching data found for your query in the current sheet."
+
+    idx_best = grouped.groupby(payment_col)["total_revenue"].idxmax()
+    idx_worst = grouped.groupby(payment_col)["total_revenue"].idxmin()
+
+    best = grouped.loc[idx_best].rename(
+        columns={
+            payment_col: "Payment Method",
+            "__month_label__": "Best Month",
+            "total_revenue": "Best Month Revenue",
+        }
+    )
+    worst = grouped.loc[idx_worst].rename(
+        columns={
+            payment_col: "Payment Method",
+            "__month_label__": "Worst Month",
+            "total_revenue": "Worst Month Revenue",
+        }
+    )
+
+    merged = best.merge(worst, on="Payment Method", how="inner")
+    if merged.empty:
+        return "No matching data found for your query in the current sheet."
+
+    merged["Best Month Revenue"] = merged["Best Month Revenue"].round(4)
+    merged["Worst Month Revenue"] = merged["Worst Month Revenue"].round(4)
+    merged = merged.sort_values("Payment Method")
+    return merged[["Payment Method", "Best Month", "Best Month Revenue", "Worst Month", "Worst Month Revenue"]].to_markdown(index=False)
+
+
+def _deterministic_medium_analytics_answer(df: pd.DataFrame, question: str) -> str:
+    top_products_answer = _deterministic_top_products_by_region_answer(df, question)
+    if top_products_answer:
+        return top_products_answer
+
+    best_worst_answer = _deterministic_best_worst_month_by_payment_method_answer(df, question)
+    if best_worst_answer:
+        return best_worst_answer
 
     return ""
 
@@ -562,6 +760,14 @@ def query_dataframe_with_langchain(df: pd.DataFrame, question: str) -> dict[str,
         return {
             "success": True,
             "answer": deterministic_answer,
+            "intermediate_steps": [],
+        }
+
+    medium_analytics_answer = _deterministic_medium_analytics_answer(df, normalized_question)
+    if medium_analytics_answer:
+        return {
+            "success": True,
+            "answer": medium_analytics_answer,
             "intermediate_steps": [],
         }
 
