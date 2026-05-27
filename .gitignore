@@ -44,3 +44,4 @@ frontend/.env.development
 #github project files
 .github/p13-n8n-project-requirements.md
 .github/AI-Forge-N8N-Sidecar.pdf
+.github/Product-Sales-Region.xlsx
